@@ -151,7 +151,8 @@ class CalendarSyncRunner(
         }
         if (applied.changes.isEmpty()) return
         var bridgeResponse: BridgeResponse? = null
-        val bridge = outboundBridge ?: return
+        val bridge = outboundBridge
+            ?: throw IllegalStateException("calendar outbound bridge is unavailable")
         NativeCalendarOutboundSource(accountName, accountType, bridge, { response ->
             bridgeResponse = response
         }).emit(applied.changes, applied.checkpoint).getOrElse { throw it }

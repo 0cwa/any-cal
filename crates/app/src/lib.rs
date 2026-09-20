@@ -2495,6 +2495,17 @@ mod framing_tests {
         String::from_utf8(output).unwrap()
     }
 
+    fn read_response_headers(stream: &mut TcpStream) -> String {
+        let mut output = Vec::new();
+        let mut chunk = [0u8; 512];
+        while !output.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0, "connection closed before response headers");
+            output.extend_from_slice(&chunk[..read]);
+        }
+        String::from_utf8(output).unwrap()
+    }
+
     #[test]
     fn app_reader_handles_two_framed_requests_without_eof() {
         let bytes = b"GET /health HTTP/1.1\r\nContent-Length: 0\r\n\r\nGET /status HTTP/1.1\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
@@ -2672,8 +2683,13 @@ mod framing_tests {
         });
 
         let mut slow = TcpStream::connect(address).unwrap();
-        slow.write_all(b"GET /health HTTP/1.1\r\nHost: slow\r\n")
+        slow.write_all(
+            b"GET /health HTTP/1.1\r\nHost: slow\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n",
+        )
             .unwrap();
+        slow.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let slow_response = read_response_headers(&mut slow);
+        assert!(slow_response.starts_with("HTTP/1.1 200 OK\r\n"));
 
         let mut rejected = TcpStream::connect(address).unwrap();
         rejected

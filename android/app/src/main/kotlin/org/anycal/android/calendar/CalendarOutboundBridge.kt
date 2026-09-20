@@ -142,8 +142,11 @@ private fun statusName(value: Int?): String? = when (value) {
 }
 
 private fun transparencyName(value: Int?): String? = when (value) {
-    CalendarContract.Events.TRANSP_TRANSPARENT -> "TRANSPARENT"
-    CalendarContract.Events.TRANSP_OPAQUE -> "OPAQUE"
+    // CalendarProvider exposes availability rather than iCalendar's
+    // TRANSP constants: free time is transparent, busy/tentative is opaque.
+    CalendarContract.Events.AVAILABILITY_FREE -> "TRANSPARENT"
+    CalendarContract.Events.AVAILABILITY_BUSY,
+    CalendarContract.Events.AVAILABILITY_TENTATIVE -> "OPAQUE"
     else -> null
 }
 
