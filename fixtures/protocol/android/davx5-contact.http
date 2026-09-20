@@ -1,0 +1,67 @@
+# Sanitized CardDAV lifecycle profile consumed by android_profile.rs.
+OPTIONS /carddav/contacts => 200
+PROPFIND /carddav/contacts (Depth: 1) => 207
+PUT /carddav/contacts/android.vcf => 201
+Content-Type: text/vcard; charset=utf-8
+BEGIN:VCARD
+VERSION:4.0
+UID:android
+FN:Android
+TEL;TYPE=cell:123
+TEL;TYPE=work:456
+EMAIL;TYPE=home:a@example.test
+X-ANDROID:opaque
+END:VCARD
+GET /carddav/contacts/android.vcf => 200
+EXPECT TEL;TYPE=cell:123
+EXPECT TEL;TYPE=work:456
+EXPECT EMAIL;TYPE=home:a@example.test
+EXPECT X-ANDROID:opaque
+PUT /carddav/contacts/android.vcf (Content-Type: text/vcard; If-Match: $ETAG) => 204
+BEGIN:VCARD
+VERSION:4.0
+UID:android
+FN:Android Edited
+TEL;TYPE=cell:123
+TEL;TYPE=work:456
+EMAIL;TYPE=home:a@example.test
+X-ANDROID:opaque
+END:VCARD
+GET /carddav/contacts/android.vcf => 200
+EXPECT Android Edited
+EXPECT X-ANDROID:opaque
+PUT /carddav/contacts/android.vcf (Content-Type: text/vcard; If-Match: "stale") => 412
+BEGIN:VCARD
+VERSION:4.0
+UID:android
+FN:Should Not Replace
+END:VCARD
+GET /carddav/contacts/android.vcf => 200
+EXPECT !Should Not Replace
+DELETE /carddav/contacts/android.vcf (If-Match: "stale") => 412
+GET /carddav/contacts/android.vcf => 200
+EXPECT Android Edited
+REPORT /carddav/contacts => 207
+<addressbook-multiget><prop><getetag/><address-data/></prop><href>/carddav/contacts/android.vcf</href><href>/carddav/contacts/missing.vcf</href></addressbook-multiget>
+EXPECT android.vcf
+EXPECT missing.vcf
+EXPECT 404 Not Found
+DELETE /carddav/contacts/android.vcf (If-Match: $ETAG) => 204
+GET /carddav/contacts/android.vcf => 404
+PUT /carddav/contacts/offline.vcf (Content-Type: text/vcard; If-None-Match: *) => 409
+FAIL duplicate
+BEGIN:VCARD
+VERSION:4.0
+UID:offline
+FN:Queued Contact
+END:VCARD
+GET /carddav/contacts/offline.vcf => 404
+PUT /carddav/contacts/offline.vcf (Content-Type: text/vcard; If-None-Match: *) => 201
+EXPECT-HEADER Location: /carddav/contacts/offline.vcf
+BEGIN:VCARD
+VERSION:4.0
+UID:offline
+FN:Queued Contact
+END:VCARD
+GET /carddav/contacts/offline.vcf => 200
+EXPECT Queued Contact

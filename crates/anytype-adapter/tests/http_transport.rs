@@ -3,6 +3,7 @@ use any_cal_anytype_adapter::{
 };
 use any_cal_core::RepositoryError;
 use rcgen::generate_simple_self_signed;
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -75,6 +76,7 @@ fn object_record() -> any_cal_anytype_adapter::ObjectRecord {
         id: "obj".into(),
         space_id: "space".into(),
         properties: vec![("description".into(), "Example".into())],
+        property_formats: BTreeMap::new(),
         body: "{}".into(),
         archived: false,
         revision: 1,

@@ -1,0 +1,12 @@
+# Sanitized DAVx5-shaped discovery profile; this is not a live client trace.
+GET /.well-known/caldav => 302
+GET /.well-known/carddav => 302
+PROPFIND / => 207
+Depth: 0
+<allprop/>
+PROPFIND /principals/users/default => 207
+Depth: 1
+<prop><current-user-principal/></prop>
+EXPECT current-user-principal
+EXPECT !calendar-home-set
+OPTIONS /carddav/contacts => 200

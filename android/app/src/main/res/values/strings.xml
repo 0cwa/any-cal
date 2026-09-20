@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Any-Cal</string>
+    <string name="account_type">org.anycal.account</string>
+    <string name="account_label">Any-Cal</string>
+</resources>

@@ -26,6 +26,20 @@ pub const ANYTYPE_CONFLICT_POLICY: ConflictPolicy = ConflictPolicy::LaterWriteWi
 pub const DEFAULT_RECONCILIATION_READS: u8 = 2;
 const MAX_RECEIPTS: usize = 128;
 
+/// Controls whether the adapter sends DAV-derived Anytype property links.
+///
+/// CanonicalBodyOnly is the safe default: the complete DAV envelope is stored
+/// in the object's markdown body, so a normal Anytype Page type is sufficient
+/// and no custom property schema is required. Projected is an explicit opt-in
+/// for a space where the caller has provisioned the projected keys on the
+/// selected type.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PropertyWriteMode {
+    #[default]
+    CanonicalBodyOnly,
+    Projected,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReconciliationPolicy {
     pub max_reads: u8,
@@ -140,6 +154,12 @@ pub struct ObjectRecord {
     pub id: String,
     pub space_id: String,
     pub properties: Vec<(String, String)>,
+    /// The Anytype property format for each key returned by the API.  Keeping
+    /// this separately from the DAV-facing string value lets updates carry
+    /// select/multi-select/object/file links forward without retyping them as
+    /// text. Legacy callers may leave the map empty and use format inference.
+    #[serde(default)]
+    pub property_formats: BTreeMap<String, String>,
     pub body: String,
     pub archived: bool,
     pub revision: u64,
@@ -911,6 +931,7 @@ impl AnytypeTransport for HttpAnytypeTransport {
                 id: id.into(),
                 space_id: space.into(),
                 properties: Vec::new(),
+                property_formats: BTreeMap::new(),
                 body: String::new(),
                 archived: true,
                 revision: 0,
@@ -933,6 +954,7 @@ impl AnytypeTransport for HttpAnytypeTransport {
                 id: id.into(),
                 space_id: space.into(),
                 properties: Vec::new(),
+                property_formats: BTreeMap::new(),
                 body: String::new(),
                 archived: true,
                 revision: 0,
@@ -948,6 +970,7 @@ pub struct AnytypeRepository<T> {
     pub transport: T,
     pub cache: MemoryRepository,
     pub space_id: String,
+    pub property_write_mode: PropertyWriteMode,
     pub locks: ObjectLocks,
     pub reconciliation: ReconciliationPolicy,
     pub metrics: OperationMetrics,
@@ -959,6 +982,7 @@ impl<T> AnytypeRepository<T> {
             transport,
             cache: MemoryRepository::new(),
             space_id: space_id.into(),
+            property_write_mode: PropertyWriteMode::CanonicalBodyOnly,
             locks: ObjectLocks::default(),
             reconciliation: ReconciliationPolicy::default(),
             metrics: OperationMetrics::default(),
@@ -970,6 +994,14 @@ impl<T> AnytypeRepository<T> {
         self.reconciliation = ReconciliationPolicy {
             max_reads: policy.max_reads.max(1),
         };
+        self
+    }
+
+    /// Enable the optional DAV-to-Anytype property projection.  The caller is
+    /// responsible for creating/linking those property keys on the Anytype
+    /// type first; canonical-body-only operation never needs that schema.
+    pub fn with_property_write_mode(mut self, mode: PropertyWriteMode) -> Self {
+        self.property_write_mode = mode;
         self
     }
 
@@ -1122,6 +1154,7 @@ impl<T: AnytypeTransport> Repository for AnytypeRepository<T> {
                     id: object_id.clone(),
                     space_id: self.space_id.clone(),
                     properties: Vec::new(),
+                    property_formats: BTreeMap::new(),
                     body: String::new(),
                     archived: true,
                     revision: 0,
@@ -1172,6 +1205,7 @@ impl<T: AnytypeTransport> Repository for AnytypeRepository<T> {
                     id: object_id.clone(),
                     space_id: self.space_id.clone(),
                     properties: Vec::new(),
+                    property_formats: BTreeMap::new(),
                     body: String::new(),
                     archived: true,
                     revision: 0,
@@ -1232,6 +1266,14 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                 } else {
                     listed
                 };
+                // A Space can contain ordinary Anytype notes/pages alongside
+                // DAV resources.  They are outside this adapter's namespace
+                // and must not make DAV discovery fail.  Once a body carries
+                // one of the envelope identity keys, malformed JSON is
+                // treated as a real adapter-state error below.
+                if !looks_like_envelope(&object.body) {
+                    continue;
+                }
                 let mut envelope = ResourceEnvelope::from_json(&object.body)
                     .map_err(|error| RepositoryError::InvalidEnvelope(error.to_string()))?;
                 // The current adapter profile exposes only CardDAV contacts
@@ -1240,8 +1282,12 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                 if !matches!(envelope.kind, DavKind::Contact | DavKind::Task) {
                     continue;
                 }
+                // Anytype's documented Object/ObjectWithBody schemas do not
+                // expose a revision field. A non-zero value is accepted only
+                // for our legacy/fake transport fixtures; zero means
+                // "unknown", not a conflict with the DAV envelope revision.
                 if envelope.collection_id.as_str().is_empty()
-                    || envelope.revision != object.revision
+                    || (object.revision != 0 && envelope.revision != object.revision)
                 {
                     return Err(RepositoryError::MalformedState);
                 }
@@ -1253,7 +1299,7 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                     // the provisional DAV-derived ID. The projected DAV
                     // markers are the durable mapping contract; once they
                     // match, the remote object ID is authoritative.
-                    if !remote_identity_markers_match(&object, &envelope) {
+                    if !remote_identity_matches(&object, &envelope) {
                         return Err(RepositoryError::MalformedState);
                     }
                     envelope.anytype_object_id = remote_id;
@@ -1375,11 +1421,25 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
             // survive a DAV edit. Fetch and carry them forward atomically with the
             // remote update rather than rebuilding the object from the envelope.
             match self.transport.get_object(&self.space_id, &object.id) {
-                Ok(existing) => object
-                    .properties
-                    .extend(existing.properties.into_iter().filter(|(key, _)| {
-                        key != "dav_uid" && key != "dav_kind" && !key.starts_with("dav.property.")
-                    })),
+                Ok(existing) => {
+                    let projected = self.property_write_mode == PropertyWriteMode::Projected;
+                    let formats = existing.property_formats;
+                    for (key, value) in existing.properties {
+                        if is_reserved_system_property(&key)
+                            || (projected
+                                && (key == "dav_uid"
+                                    || key == "dav_kind"
+                                    || key.starts_with("dav_property_")
+                                    || key.starts_with("dav.property.")))
+                        {
+                            continue;
+                        }
+                        object.properties.push((key.clone(), value));
+                        if let Some(format) = formats.get(&key) {
+                            object.property_formats.insert(key, format.clone());
+                        }
+                    }
+                }
                 Err(TransportError::NotFound) => {}
                 Err(error) => return Err(Self::map_transport_error(error)),
             }
@@ -1454,11 +1514,19 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
             let page = self
                 .transport
                 .list_objects(&expected.space_id, cursor.as_deref())?;
-            if let Some(actual) = page
-                .data
-                .into_iter()
-                .find(|actual| create_identity_matches(expected, actual))
-            {
+            let mut candidate = None;
+            for listed in page.data {
+                let actual = if listed.body.is_empty() && !listed.id.is_empty() {
+                    self.transport.get_object(&expected.space_id, &listed.id)?
+                } else {
+                    listed
+                };
+                if create_identity_matches(expected, &actual) {
+                    candidate = Some(actual);
+                    break;
+                }
+            }
+            if let Some(actual) = candidate {
                 self.metrics.reconciled_mutations =
                     self.metrics.reconciled_mutations.saturating_add(1);
                 return Ok((actual, reads));
@@ -1495,6 +1563,7 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                             id: object_id.into(),
                             space_id: self.space_id.clone(),
                             properties: Vec::new(),
+                            property_formats: BTreeMap::new(),
                             body: String::new(),
                             archived: true,
                             revision: 0,
@@ -1521,7 +1590,11 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
         Ok(ObjectRecord {
             id: envelope.anytype_object_id.to_string(),
             space_id: self.space_id.clone(),
-            properties: projected_properties(envelope),
+            properties: match self.property_write_mode {
+                PropertyWriteMode::CanonicalBodyOnly => Vec::new(),
+                PropertyWriteMode::Projected => projected_properties(envelope),
+            },
+            property_formats: BTreeMap::new(),
             body: self.object_body(envelope)?,
             archived,
             revision: envelope.revision,
@@ -1529,10 +1602,27 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
     }
 }
 
+/// The object response includes read-only system properties. Anytype rejects
+/// sending those keys in an object PATCH, while custom properties are valid
+/// and must survive a DAV edit. This list is source-backed by the current
+/// API's live error response and intentionally remains separate from the
+/// caller's mutable/custom property namespace.
+fn is_reserved_system_property(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "backlinks"
+            | "creator"
+            | "created_date"
+            | "last_modified_date"
+            | "last_modified_by"
+            | "links"
+    )
+}
+
 /// The envelope is authoritative and remains opaque, while these stable
 /// properties make the useful DAV fields searchable/editable in Anytype.
 /// Unknown DAV fields stay in the envelope and are also represented here by
-/// deterministic `dav.property.<name>.<occurrence>` keys.
+/// deterministic snake_case dav_property_<name>_<occurrence> keys.
 fn projected_properties(envelope: &ResourceEnvelope) -> Vec<(String, String)> {
     let mut properties = vec![
         ("dav_uid".into(), envelope.dav_uid.to_string()),
@@ -1541,12 +1631,32 @@ fn projected_properties(envelope: &ResourceEnvelope) -> Vec<(String, String)> {
     for (name, values) in &envelope.document.content.fields {
         for (index, occurrence) in values.iter().enumerate() {
             properties.push((
-                format!("dav.property.{name}.{index}"),
+                format!("dav_property_{}_{}", property_key_segment(name), index),
                 occurrence.value.clone(),
             ));
         }
     }
     properties
+}
+
+fn property_key_segment(name: &str) -> String {
+    let mut segment = String::new();
+    let mut previous_separator = false;
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            segment.push(character.to_ascii_lowercase());
+            previous_separator = false;
+        } else if !previous_separator {
+            segment.push('_');
+            previous_separator = true;
+        }
+    }
+    let segment = segment.trim_matches('_');
+    if segment.is_empty() {
+        "field".into()
+    } else {
+        segment.into()
+    }
 }
 
 /// Return the exact stable property projection used for Anytype writes.
@@ -1585,11 +1695,14 @@ fn create_identity_matches(expected: &ObjectRecord, actual: &ObjectRecord) -> bo
                 .any(|candidate| candidate == *marker)
         });
     }
-    actual.body == expected.body && actual.properties == expected.properties
+    if actual.body == expected.body && actual.properties == expected.properties {
+        return true;
+    }
+    canonical_identity_matches(&expected.body, &actual.body)
 }
 
-fn remote_identity_markers_match(object: &ObjectRecord, envelope: &ResourceEnvelope) -> bool {
-    [
+fn remote_identity_matches(object: &ObjectRecord, envelope: &ResourceEnvelope) -> bool {
+    let markers_match = [
         ("dav_uid", envelope.dav_uid.to_string()),
         ("dav_kind", kind_name(&envelope.kind).to_string()),
     ]
@@ -1599,7 +1712,39 @@ fn remote_identity_markers_match(object: &ObjectRecord, envelope: &ResourceEnvel
             .properties
             .iter()
             .any(|candidate| candidate.0 == marker.0 && candidate.1 == marker.1)
-    })
+    });
+    markers_match
+        || canonical_identity_matches(&envelope.canonical_json().unwrap_or_default(), &object.body)
+}
+
+fn canonical_identity_matches(expected_body: &str, actual_body: &str) -> bool {
+    let Ok(expected) = ResourceEnvelope::from_json(expected_body) else {
+        return false;
+    };
+    let Ok(actual) = ResourceEnvelope::from_json(actual_body) else {
+        return false;
+    };
+    expected.collection_id == actual.collection_id
+        && expected.resource_id == actual.resource_id
+        && expected.kind == actual.kind
+        && expected.dav_uid == actual.dav_uid
+}
+
+fn looks_like_envelope(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|object| {
+            [
+                "collection_id",
+                "resource_id",
+                "kind",
+                "dav_uid",
+                "document",
+            ]
+            .iter()
+            .any(|key| object.contains_key(*key))
+        })
 }
 
 fn kind_name(kind: &DavKind) -> &'static str {

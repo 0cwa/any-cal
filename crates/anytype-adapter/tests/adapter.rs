@@ -16,6 +16,7 @@ fn object(id: &str, space: &str) -> ObjectRecord {
         id: id.into(),
         space_id: space.into(),
         properties: vec![("Name".into(), id.into())],
+        property_formats: BTreeMap::new(),
         body: format!("line one\n{id}"),
         archived: false,
         revision: 1,
@@ -157,6 +158,7 @@ fn repository_reads_hydrate_empty_cache_with_pages_and_etags() {
                 id: e.anytype_object_id.to_string(),
                 space_id: "space".into(),
                 properties: vec![],
+                property_formats: BTreeMap::new(),
                 body: e.canonical_json().unwrap(),
                 archived: false,
                 revision: e.revision,
@@ -208,6 +210,16 @@ fn server_id_is_separate_from_dav_uid_across_reload_update_and_delete() {
         created.envelope.dav_uid.as_str(),
         created.envelope.anytype_object_id.as_str()
     );
+    assert!(
+        repo.transport
+            .inner
+            .objects
+            .get("server-object-1")
+            .unwrap()
+            .properties
+            .is_empty(),
+        "body-only mode must not require a custom Anytype property schema"
+    );
 
     // Reopening with only the remote transport must hydrate the canonical
     // envelope from GET after the summary-only list response.
@@ -245,12 +257,11 @@ fn server_id_is_separate_from_dav_uid_across_reload_update_and_delete() {
             any_cal_core::WriteCondition::Unconditional,
         )
         .unwrap();
-    assert!(reopened
+    assert!(!reopened
         .transport
         .inner
         .objects
-        .get("server-object-1")
-        .is_none());
+        .contains_key("server-object-1"));
 }
 
 #[test]
@@ -289,8 +300,8 @@ fn property_projection_has_stable_identity_kind_and_occurrence_keys() {
         vec![
             ("dav_uid".into(), "uid-c1".into()),
             ("dav_kind".into(), "Contact".into()),
-            ("dav.property.TEL.0".into(), "+1-555-0100".into()),
-            ("dav.property.TEL.1".into(), "+1-555-0101".into()),
+            ("dav_property_tel_0".into(), "+1-555-0100".into()),
+            ("dav_property_tel_1".into(), "+1-555-0101".into()),
         ]
     );
 }
@@ -304,7 +315,12 @@ fn update_carries_unknown_anytype_properties_forward() {
         ObjectRecord {
             id: e.anytype_object_id.to_string(),
             space_id: "space".into(),
-            properties: vec![("custom_label".into(), "keep-me".into())],
+            properties: vec![
+                ("custom_label".into(), "keep-me".into()),
+                ("creator".into(), "system-user".into()),
+                ("last_modified_date".into(), "system-date".into()),
+            ],
+            property_formats: BTreeMap::new(),
             body: e.canonical_json().unwrap(),
             archived: false,
             revision: e.revision,
@@ -322,6 +338,10 @@ fn update_carries_unknown_anytype_properties_forward() {
     assert!(remote
         .properties
         .contains(&("custom_label".into(), "keep-me".into())));
+    assert!(!remote
+        .properties
+        .iter()
+        .any(|(key, _)| key == "creator" || key == "last_modified_date"));
 }
 
 #[test]
@@ -334,6 +354,7 @@ fn refresh_is_atomic_and_replaces_stale_rows() {
             id: "obj-c1".into(),
             space_id: "space".into(),
             properties: vec![],
+            property_formats: BTreeMap::new(),
             body: original.canonical_json().unwrap(),
             archived: false,
             revision: original.revision,
@@ -356,6 +377,7 @@ fn refresh_is_atomic_and_replaces_stale_rows() {
             id: "obj-c1".into(),
             space_id: "space".into(),
             properties: vec![],
+            property_formats: BTreeMap::new(),
             body: changed.canonical_json().unwrap(),
             archived: false,
             revision: changed.revision,
@@ -372,7 +394,8 @@ fn refresh_is_atomic_and_replaces_stale_rows() {
             id: "obj-bad".into(),
             space_id: "space".into(),
             properties: vec![],
-            body: "malformed".into(),
+            property_formats: BTreeMap::new(),
+            body: r#"{"resource_id":"bad","document":{}}"#.into(),
             archived: false,
             revision: 1,
         },
@@ -403,7 +426,8 @@ fn malformed_remote_envelope_is_an_explicit_error() {
             id: "bad".into(),
             space_id: "space".into(),
             properties: vec![],
-            body: "not-json".into(),
+            property_formats: BTreeMap::new(),
+            body: r#"{"dav_uid":"bad"}"#.into(),
             archived: false,
             revision: 1,
         },
@@ -438,6 +462,7 @@ fn archive_is_confirmed_and_omitted_from_normal_relist() {
         id: e.anytype_object_id.to_string(),
         space_id: "space".into(),
         properties: projected_anytype_properties(&e),
+        property_formats: BTreeMap::new(),
         body: e.canonical_json().unwrap(),
         archived: false,
         revision: e.revision,
@@ -530,12 +555,13 @@ fn repository_projects_properties_and_hides_archived_or_wrong_kind_objects() {
                     vec![
                         ("dav_uid".into(), e.dav_uid.to_string()),
                         ("dav_kind".into(), "Contact".into()),
-                        ("dav.property.FN.0".into(), "Ada & Grace".into()),
+                        ("dav_property_fn_0".into(), "Ada & Grace".into()),
                         ("custom_label".into(), "kept".into()),
                     ]
                 } else {
                     vec![]
                 },
+                property_formats: BTreeMap::new(),
                 body: e.canonical_json().unwrap(),
                 archived,
                 revision: e.revision,
@@ -559,6 +585,42 @@ fn repository_projects_properties_and_hides_archived_or_wrong_kind_objects() {
 }
 
 #[test]
+fn unrelated_anytype_pages_are_ignored_during_hydration() {
+    let contact = envelope("contacts", "c1", DavKind::Contact);
+    let mut fake = FakeAnytypeTransport::new(10);
+    fake.objects.insert(
+        "ordinary-note".into(),
+        ObjectRecord {
+            id: "ordinary-note".into(),
+            space_id: "space".into(),
+            properties: vec![("title".into(), "A normal Anytype page".into())],
+            property_formats: BTreeMap::from([("title".into(), "text".into())]),
+            body: "This is not an Any-Cal envelope".into(),
+            archived: false,
+            revision: 0,
+        },
+    );
+    fake.objects.insert(
+        "obj-c1".into(),
+        ObjectRecord {
+            id: "obj-c1".into(),
+            space_id: "space".into(),
+            properties: vec![],
+            property_formats: BTreeMap::new(),
+            body: contact.canonical_json().unwrap(),
+            archived: false,
+            revision: 0,
+        },
+    );
+    let mut repo = AnytypeRepository::new(fake, "space");
+    let resources = repo
+        .list_resources(&CollectionId::try_from("contacts").unwrap(), false)
+        .unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].envelope.resource_id, contact.resource_id);
+}
+
+#[test]
 fn delayed_read_is_typed_through_repository() {
     let e = envelope("contacts", "c1", DavKind::Contact);
     let mut fake = FakeAnytypeTransport::new(10);
@@ -568,6 +630,7 @@ fn delayed_read_is_typed_through_repository() {
             id: e.anytype_object_id.to_string(),
             space_id: "space".into(),
             properties: vec![],
+            property_formats: BTreeMap::new(),
             body: e.canonical_json().unwrap(),
             archived: false,
             revision: e.revision,
@@ -582,7 +645,7 @@ fn delayed_read_is_typed_through_repository() {
 }
 
 #[test]
-fn identity_drift_is_rejected_without_cache_mutation() {
+fn server_id_mismatch_is_adopted_when_dav_identity_matches() {
     let e = envelope("contacts", "c1", DavKind::Contact);
     let mut fake = FakeAnytypeTransport::new(10);
     fake.objects.insert(
@@ -591,17 +654,22 @@ fn identity_drift_is_rejected_without_cache_mutation() {
             id: "wrong-object-id".into(),
             space_id: "space".into(),
             properties: vec![],
+            property_formats: BTreeMap::new(),
             body: e.canonical_json().unwrap(),
             archived: false,
             revision: e.revision,
         },
     );
     let mut repo = AnytypeRepository::new(fake, "space");
+    assert_eq!(repo.list_collections().unwrap().len(), 1);
+    let loaded = repo
+        .get_resource(&e.resource_id)
+        .unwrap()
+        .expect("canonical DAV identity remains discoverable");
     assert_eq!(
-        repo.list_collections(),
-        Err(any_cal_core::RepositoryError::MalformedState)
+        loaded.envelope.anytype_object_id.as_str(),
+        "wrong-object-id"
     );
-    assert!(repo.cache.list_collections().unwrap().is_empty());
 }
 
 #[test]
@@ -614,6 +682,7 @@ fn delayed_visibility_is_distinct_from_not_found() {
             id: e.anytype_object_id.to_string(),
             space_id: "space".into(),
             properties: vec![],
+            property_formats: BTreeMap::new(),
             body: e.canonical_json().unwrap(),
             archived: false,
             revision: e.revision,

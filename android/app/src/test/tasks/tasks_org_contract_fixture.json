@@ -1,0 +1,80 @@
+{
+  "authority": "org.tasks.api",
+  "api_version": "v0",
+  "base_uri": "content://org.tasks.api/v0",
+  "permissions": [
+    "org.tasks.permission.READ_TASKS",
+    "org.tasks.permission.WRITE_TASKS"
+  ],
+  "allow_list": {
+    "org.tasks": [1500000, 1500012]
+  },
+  "probe_cases": [
+    {
+      "name": "provider-absent",
+      "provider_package": null,
+      "version_code": null,
+      "read_granted": false,
+      "write_granted": false,
+      "expected": "unsupported"
+    },
+    {
+      "name": "wrong-package",
+      "provider_package": "org.example.tasks",
+      "version_code": 1500012,
+      "read_granted": true,
+      "write_granted": true,
+      "expected": "unsupported"
+    },
+    {
+      "name": "unvalidated-version",
+      "provider_package": "org.tasks",
+      "version_code": 1500099,
+      "read_granted": true,
+      "write_granted": true,
+      "expected": "unsupported"
+    },
+    {
+      "name": "read-only",
+      "provider_package": "org.tasks",
+      "version_code": 1500012,
+      "read_granted": true,
+      "write_granted": false,
+      "expected": "unsupported"
+    },
+    {
+      "name": "validated-and-writable",
+      "provider_package": "org.tasks",
+      "version_code": 1500012,
+      "read_granted": true,
+      "write_granted": true,
+      "expected": "supported"
+    }
+  ],
+  "task": {
+    "canonical_id": "anytype-object-contact-project-task-001",
+    "title": "Prepare quarterly review",
+    "notes": "Bring the latest metrics.",
+    "due_date": 1778716800000,
+    "due_all_day": 1,
+    "start_date": 1778630400000,
+    "start_all_day": 1,
+    "completed_at": 0,
+    "recurrence": "",
+    "list_provider_id": 42,
+    "parent_provider_id": 7
+  },
+  "expected_columns": {
+    "title": "Prepare quarterly review",
+    "notes": "Bring the latest metrics.",
+    "due_date": 1778716800000,
+    "due_all_day": 1,
+    "start_date": 1778630400000,
+    "start_all_day": 1,
+    "completed_at": 0,
+    "recurrence": "",
+    "list_id": 42,
+    "parent_id": 7
+  },
+  "forbidden_columns": ["canonical_id", "provider_id", "anytype_object_id"]
+}

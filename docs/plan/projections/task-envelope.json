@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "task",
+  "canonical_id": "anytype-task-synthetic-001",
+  "dav_uid": "task-synthetic-001@example.invalid",
+  "fields": {
+    "title": "Synthetic task",
+    "notes": "No personal data",
+    "status": "NEEDS-ACTION",
+    "due": "2026-10-30T17:00:00Z",
+    "list_canonical_id": "task-list-synthetic-001",
+    "tags": ["crm", "follow-up"],
+    "parent_canonical_id": null,
+    "recurrence": "FREQ=MONTHLY;COUNT=2",
+    "reminders": [{"minutes_before": 60, "method": "DISPLAY"}]
+  },
+  "source": {
+    "adapter": "tasks_org",
+    "account_name": "any-cal-test-space",
+    "account_type": "invalid.example.anycal",
+    "source_id": "android/invalid.example.anycal/any-cal-test-space/anytype-task-synthetic-001"
+  },
+  "capability_requirement": {
+    "authority": "org.tasks.api",
+    "minimum_probe": "task-list-tag-reminder-crud",
+    "existing_list_required": true
+  }
+}

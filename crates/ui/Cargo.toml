@@ -1,0 +1,9 @@
+[package]
+name = "any-cal-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+any-cal-app = { path = "../app" }
+slint = "1.12.1"

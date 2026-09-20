@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "kind": "event",
+  "canonical_id": "anytype-event-synthetic-001",
+  "dav_uid": "event-synthetic-001@example.invalid",
+  "fields": {
+    "calendar_canonical_id": "calendar-synthetic-001",
+    "summary": "Synthetic review",
+    "start": {"value": "2026-10-25T09:00:00", "timezone": "Europe/Stockholm"},
+    "end": {"value": "2026-10-25T10:00:00", "timezone": "Europe/Stockholm"},
+    "recurrence": {
+      "rrule": "FREQ=WEEKLY;COUNT=3",
+      "rdate": [],
+      "exdate": ["2026-11-08T09:00:00 Europe/Stockholm"]
+    },
+    "attendees": [
+      {"email": "person@example.invalid", "role": "REQ-PARTICIPANT", "status": "NEEDS-ACTION"}
+    ],
+    "reminders": [{"minutes_before": 15, "method": "DISPLAY"}]
+  },
+  "opaque": [
+    {"name": "X-SYNTHETIC-FIELD", "value": "retain", "parameters": {}, "order": 0}
+  ],
+  "source": {
+    "adapter": "android_calendar",
+    "account_name": "any-cal-test-space",
+    "account_type": "invalid.example.anycal",
+    "source_id": "android/invalid.example.anycal/any-cal-test-space/anytype-event-synthetic-001"
+  }
+}

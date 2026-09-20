@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "contact",
+  "canonical_id": "anytype-contact-synthetic-001",
+  "dav_uid": "contact-synthetic-001@example.invalid",
+  "fields": {
+    "display_name": "Ada Example",
+    "name": {"family": "Example", "given": "Ada", "middle": "L"},
+    "phones": [
+      {"value": "+461234567", "label": "cell", "source_occurrence_id": "tel-1"},
+      {"value": "+468765432", "label": "work", "source_occurrence_id": "tel-2"}
+    ],
+    "emails": [
+      {"value": "ada@example.invalid", "label": "work", "source_occurrence_id": "email-1"}
+    ],
+    "groups": ["group-synthetic-001"]
+  },
+  "opaque": [
+    {"name": "X-CUSTOM-CRM", "value": "priority-client", "parameters": {}, "order": 0}
+  ],
+  "source": {
+    "adapter": "android_contacts",
+    "account_name": "any-cal-test-space",
+    "account_type": "invalid.example.anycal",
+    "source_id": "android/invalid.example.anycal/any-cal-test-space/anytype-contact-synthetic-001"
+  }
+}

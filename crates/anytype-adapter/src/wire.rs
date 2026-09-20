@@ -59,6 +59,27 @@ impl WireProperty {
         .iter()
         .find_map(|tag| self.extra.get(*tag).and_then(value_to_string))
     }
+
+    fn format(&self) -> Option<String> {
+        self.format.clone().or_else(|| {
+            [
+                "text",
+                "number",
+                "date",
+                "url",
+                "email",
+                "phone",
+                "checkbox",
+                "select",
+                "multi_select",
+                "objects",
+                "files",
+            ]
+            .iter()
+            .find(|tag| self.extra.contains_key(**tag))
+            .map(|tag| (*tag).to_owned())
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -94,8 +115,10 @@ pub struct WireObject {
     pub properties: Vec<WireProperty>,
     #[serde(default)]
     pub archived: bool,
+    /// Not present in the official Object/ObjectWithBody schemas.  It remains
+    /// optional for compatibility with old fixtures and the fake transport.
     #[serde(default)]
-    pub revision: u64,
+    pub revision: Option<u64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -206,7 +229,10 @@ fn object_to_wire(
         Operation::Create => "body",
         Operation::Update => "markdown",
     };
-    value.insert(body_field.into(), Value::String(object.body.clone()));
+    value.insert(
+        body_field.into(),
+        Value::String(encode_markdown_body(&object.body)),
+    );
     if let Some(name) = display_name(object) {
         value.insert("name".into(), Value::String(name));
     }
@@ -222,7 +248,11 @@ fn object_to_wire(
                 .map(|(name, property)| {
                     let mut item = Map::new();
                     item.insert("key".into(), Value::String(name.clone()));
-                    let (tag, typed) = typed_property_value(name, property)?;
+                    let (tag, typed) = typed_property_value(
+                        name,
+                        property,
+                        object.property_formats.get(name).map(String::as_str),
+                    )?;
                     item.insert(tag, typed);
                     Ok(Value::Object(item))
                 })
@@ -239,7 +269,12 @@ impl WireObject {
             .space_id
             .or_else(|| fallback_space.map(str::to_owned))
             .ok_or(TransportError::Malformed)?;
-        let mut properties = self
+        let property_formats = self
+            .properties
+            .iter()
+            .filter_map(|property| Some((property.key()?.to_owned(), property.format()?)))
+            .collect::<BTreeMap<_, _>>();
+        let properties = self
             .properties
             .into_iter()
             .map(|property| {
@@ -247,23 +282,52 @@ impl WireObject {
                 Ok((key, property.value().unwrap_or_default()))
             })
             .collect::<Result<Vec<_>, TransportError>>()?;
-        if let Some(name) = self.name {
-            if !properties
-                .iter()
-                .any(|(key, _)| key.eq_ignore_ascii_case("name"))
-            {
-                properties.push(("name".into(), name));
-            }
-        }
         Ok(ObjectRecord {
             id,
             space_id,
             properties,
-            body: self.markdown.or(self.body).unwrap_or_default(),
+            property_formats,
+            body: decode_markdown_body(self.markdown.or(self.body).unwrap_or_default()),
             archived: self.archived,
-            revision: self.revision,
+            revision: self.revision.unwrap_or_default(),
         })
     }
+}
+
+/// Anytype stores object bodies as Markdown. Plain JSON is rewritten by the
+/// Markdown normalizer (for example, `_` becomes `\_`), which corrupts the
+/// canonical DAV envelope. A fenced code block is treated as literal text by
+/// the service; hydration removes only that transport wrapper and keeps the
+/// internal repository body as canonical JSON.
+fn encode_markdown_body(body: &str) -> String {
+    if is_markdown_fence(body) {
+        body.to_owned()
+    } else {
+        format!("```json\n{body}\n```")
+    }
+}
+
+fn decode_markdown_body(body: String) -> String {
+    let trimmed = body.trim();
+    if !trimmed.starts_with("```") || !trimmed.ends_with("```") {
+        return body;
+    }
+    let mut inner = &trimmed[3..trimmed.len() - 3];
+    if let Some(without_language) = inner.strip_prefix("json") {
+        if without_language
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+        {
+            inner = without_language;
+        }
+    }
+    inner.trim().to_owned()
+}
+
+fn is_markdown_fence(body: &str) -> bool {
+    let trimmed = body.trim();
+    trimmed.starts_with("```") && trimmed.ends_with("```")
 }
 
 fn value_to_string(value: &Value) -> Option<String> {
@@ -284,9 +348,16 @@ fn value_to_string(value: &Value) -> Option<String> {
 /// rejected by the pinned CLI because it cannot determine the property type.
 /// The internal cache has no schema handle, so use stable DAV/property-name
 /// conventions for the scalar types and retain relation values as `objects`.
-fn typed_property_value(name: &str, value: &str) -> Result<(String, Value), TransportError> {
+fn typed_property_value(
+    name: &str,
+    value: &str,
+    format: Option<&str>,
+) -> Result<(String, Value), TransportError> {
     let key = name.to_ascii_lowercase();
-    let (tag, typed) = if key == "done" || key.ends_with(".done") || key == "checkbox" {
+    let format = format.map(str::to_ascii_lowercase);
+    let (tag, typed) = if format.as_deref() == Some("checkbox")
+        || (format.is_none() && (key == "done" || key.ends_with(".done") || key == "checkbox"))
+    {
         (
             "checkbox",
             value.parse::<bool>().map(Value::Bool).map_err(|_| {
@@ -295,7 +366,9 @@ fn typed_property_value(name: &str, value: &str) -> Result<(String, Value), Tran
                 ))
             })?,
         )
-    } else if key == "number" || key.ends_with(".number") {
+    } else if format.as_deref() == Some("number")
+        || (format.is_none() && (key == "number" || key.ends_with(".number")))
+    {
         (
             "number",
             value
@@ -307,20 +380,60 @@ fn typed_property_value(name: &str, value: &str) -> Result<(String, Value), Tran
                     TransportError::InvalidRequest(format!("number property {name} is invalid"))
                 })?,
         )
-    } else if key == "date" || key.ends_with(".date") {
+    } else if format.as_deref() == Some("date")
+        || (format.is_none() && (key == "date" || key.ends_with(".date")))
+    {
         ("date", Value::String(value.into()))
-    } else if key == "relation" || key.ends_with(".relation") || key == "objects" {
-        let objects = value
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(|item| Value::String(item.into()))
-            .collect();
-        ("objects", Value::Array(objects))
+    } else if matches!(
+        format.as_deref(),
+        Some("multi_select") | Some("objects") | Some("files")
+    ) || (format.is_none()
+        && (key == "relation" || key.ends_with(".relation") || key == "objects"))
+    {
+        let values = json_link_array(value).unwrap_or_else(|| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(|item| Value::String(item.into()))
+                .collect()
+        });
+        let tag = format.as_deref().unwrap_or("objects");
+        (tag, Value::Array(values))
+    } else if format.as_deref() == Some("select") {
+        (
+            "select",
+            select_link_value(value).unwrap_or_else(|| Value::String(value.into())),
+        )
     } else {
-        ("text", Value::String(value.into()))
+        let tag = format.as_deref().unwrap_or("text");
+        (tag, Value::String(value.into()))
     };
     Ok((tag.into(), typed))
+}
+
+fn json_link_array(value: &str) -> Option<Vec<Value>> {
+    serde_json::from_str::<Value>(value)
+        .ok()?
+        .as_array()?
+        .iter()
+        .map(|item| match item {
+            Value::String(item) => Some(Value::String(item.to_owned())),
+            Value::Object(object) => object
+                .get("key")
+                .or_else(|| object.get("id"))
+                .or_else(|| object.get("name"))
+                .and_then(Value::as_str)
+                .map(|item| Value::String(item.to_owned())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn select_link_value(value: &str) -> Option<Value> {
+    let object = serde_json::from_str::<Value>(value).ok()?;
+    let object = object.as_object()?;
+    object.get("key").or_else(|| object.get("id")).cloned()
 }
 
 fn deserialize_properties<'de, D>(deserializer: D) -> Result<Vec<WireProperty>, D::Error>

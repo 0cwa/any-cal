@@ -1,0 +1,15 @@
+[package]
+name = "any-cal-android-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+any-cal-core = { path = "../core" }
+jni = "0.21"
+serde_json.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "any-cal-anytype-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+any-cal-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rustls = { workspace = true }
+rustls-platform-verifier = { workspace = true }
+
+[dev-dependencies]
+rcgen = "0.14"

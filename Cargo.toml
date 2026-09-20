@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/core", "crates/dav-server", "crates/anytype-adapter", "crates/app", "crates/ui", "crates/observability", "crates/sync", "crates/android-bridge"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7"

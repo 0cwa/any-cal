@@ -1,0 +1,95 @@
+# Sanitized Tasks.org-shaped VTODO profile consumed by android_profile.rs.
+OPTIONS /caldav/tasks => 200
+PROPFIND /caldav/tasks (Depth: 1) => 207
+PUT /caldav/tasks/android.ics => 201
+Content-Type: text/calendar; charset=utf-8
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VTODO
+UID:android-task
+SUMMARY:Test
+DTSTART:20260830T120000Z
+DUE;TZID=Europe/Stockholm:20260830T130000
+STATUS:NEEDS-ACTION
+END:VTODO
+END:VCALENDAR
+EXPECT DTSTART:20260830T120000Z
+EXPECT DUE;TZID=Europe/Stockholm:20260830T130000
+GET /caldav/tasks/android.ics => 200
+EXPECT DTSTART:20260830T120000Z
+EXPECT DUE;TZID=Europe/Stockholm:20260830T130000
+PUT /caldav/tasks/android.ics (Content-Type: text/calendar; If-Match: $ETAG) => 204
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VTODO
+UID:android-task
+SUMMARY:Completed
+DTSTART:20260830T120000
+DUE:20260830T130000
+STATUS:COMPLETED
+END:VTODO
+END:VCALENDAR
+GET /caldav/tasks/android.ics => 200
+EXPECT STATUS:COMPLETED
+EXPECT DTSTART:20260830T120000
+EXPECT !DTSTART:20260830T120000Z
+REPORT /caldav/tasks => 207
+<calendar-query><prop><calendar-data/></prop><filter><comp-filter name="VTODO"><prop-filter name="STATUS"><text-match>COMPLETED</text-match></prop-filter></comp-filter></filter></calendar-query>
+EXPECT Completed
+PUT /caldav/tasks/android.ics (Content-Type: text/calendar; If-Match: "stale") => 412
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VTODO
+UID:android-task
+SUMMARY:Stale
+STATUS:NEEDS-ACTION
+END:VTODO
+END:VCALENDAR
+EXPECT !Stale
+DELETE /caldav/tasks/android.ics (If-Match: "stale") => 412
+GET /caldav/tasks/android.ics => 200
+EXPECT STATUS:COMPLETED
+REPORT /caldav/tasks => 408
+FAIL timeout
+<calendar-query><prop><calendar-data/></prop></calendar-query>
+EXPECT !Offline Attempt
+REPORT /caldav/tasks => 207
+<calendar-query><prop><calendar-data/></prop></calendar-query>
+PUT /caldav/tasks/android.ics (Content-Type: text/calendar; If-Match: $ETAG) => 204
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VTODO
+UID:android-task
+SUMMARY:Reconnected
+STATUS:COMPLETED
+END:VTODO
+END:VCALENDAR
+REPORT /caldav/tasks => 207
+<calendar-multiget><prop><getetag/><calendar-data/></prop><href>/caldav/tasks/android.ics</href><href>/caldav/tasks/missing.ics</href></calendar-multiget>
+EXPECT missing.ics
+EXPECT 404 Not Found
+DELETE /caldav/tasks/android.ics => 204
+GET /caldav/tasks/android.ics => 404
+PUT /caldav/tasks/offline.ics (Content-Type: text/calendar; If-None-Match: *) => 409
+FAIL duplicate
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VTODO
+UID:offline-task
+SUMMARY:Queued Task
+STATUS:NEEDS-ACTION
+END:VTODO
+END:VCALENDAR
+GET /caldav/tasks/offline.ics => 404
+PUT /caldav/tasks/offline.ics (Content-Type: text/calendar; If-None-Match: *) => 201
+EXPECT-HEADER Location: /caldav/tasks/offline.ics
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VTODO
+UID:offline-task
+SUMMARY:Queued Task
+STATUS:NEEDS-ACTION
+END:VTODO
+END:VCALENDAR
+GET /caldav/tasks/offline.ics => 200
+EXPECT Queued Task

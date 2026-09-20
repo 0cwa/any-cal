@@ -1,0 +1,16 @@
+[package]
+name = "any-cal-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+any-cal-core = { path = "../core" }
+any-cal-dav-server = { path = "../dav-server" }
+any-cal-anytype-adapter = { path = "../anytype-adapter" }
+any-cal-sync = { path = "../sync" }
+any-cal-observability = { path = "../observability" }
+libc = "0.2"
+sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

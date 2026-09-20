@@ -7,6 +7,7 @@ use any_cal_core::{
 use any_cal_dav_server::Request;
 use any_cal_observability::{AuditEventWriter, ReconciliationReport};
 use any_cal_sync::CommitFault;
+use std::collections::BTreeMap;
 use std::fs;
 
 #[test]
@@ -605,6 +606,7 @@ fn seeded_transport() -> FakeAnytypeTransport {
                 id: id.into(),
                 space_id: "space".into(),
                 properties: vec![],
+                property_formats: BTreeMap::new(),
                 body: envelope.canonical_json().unwrap(),
                 archived: false,
                 revision: 0,
@@ -1898,6 +1900,7 @@ fn actual_app_dav_seam_supports_conditional_contact_lifecycle() {
             id: "bootstrap".into(),
             space_id: "space".into(),
             properties: vec![],
+            property_formats: BTreeMap::new(),
             body: envelope.canonical_json().unwrap(),
             archived: false,
             revision: 0,
@@ -1980,6 +1983,7 @@ fn actual_app_dav_seam_supports_vtodo_task_lifecycle() {
             id: "bootstrap-task".into(),
             space_id: "space".into(),
             properties: vec![],
+            property_formats: BTreeMap::new(),
             body: envelope.canonical_json().unwrap(),
             archived: false,
             revision: 0,

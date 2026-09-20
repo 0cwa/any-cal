@@ -1,0 +1,16 @@
+BEGIN:VCARD
+VERSION:4.0
+UID:fixture-contact-1
+FN:Zoë Example
+N:Example;Zoë;;Dr.;Jr.
+TEL;TYPE=cell,voice;PREF=1:+461234
+TEL;TYPE=work:+465678
+EMAIL;TYPE=work:zoe@example.test
+ADR;TYPE=home:;;Main Street 1;Stockholm;;;SE
+ORG:Example AB
+TITLE:Director
+CATEGORIES:crm,friend
+URL:https://example.test/contact
+NOTE:line one\nline two
+X-CLIENT-FOO:opaque
+END:VCARD

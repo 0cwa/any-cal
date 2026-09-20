@@ -1,17 +1,24 @@
 use any_cal_anytype_adapter::{AnytypeRepository, AnytypeTransport, FakeAnytypeTransport};
-use any_cal_core::{Collection, CollectionId, Repository};
+use any_cal_core::{
+    BridgeCheckpoint, BridgeDecision, BridgeError, BridgeErrorCode, BridgeRequest, BridgeResponse,
+    BridgeTombstone, Collection, CollectionId, DavKind, Repository, RepositoryError,
+    ResourceEnvelope, SyncDecision, WriteCondition, BRIDGE_SCHEMA_VERSION,
+};
 use any_cal_dav_server::DavServer;
 use any_cal_observability::{
     AuditEventWriter, AuditHealthState, AuditReadbackQuery, AuditSummary, Correlation,
     ErrorCategory, Event, EventBuffer, Health, ReconciliationReport, MAX_AUDIT_READBACK,
 };
 use any_cal_sync::{CommitFault, ObservedResource, SyncState, SyncStore};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::ToSocketAddrs;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use serde::Serialize;
 
 pub mod identity;
 
@@ -390,6 +397,26 @@ struct AuditStatus {
     json: String,
 }
 
+/// The core bridge response deliberately contains only decisions and a
+/// checkpoint.  Android needs the canonical payloads in the same response so
+/// it can project Anytype changes into the account-owned provider rows.  Keep
+/// this extension private to the app boundary; the core contract remains
+/// usable by other adapters.
+#[derive(Serialize)]
+struct AndroidSyncTombstone {
+    #[serde(flatten)]
+    tombstone: BridgeTombstone,
+    collection_id: String,
+}
+
+#[derive(Serialize)]
+struct AndroidSyncResponse {
+    #[serde(flatten)]
+    bridge: BridgeResponse,
+    resources: Vec<ResourceEnvelope>,
+    tombstones: Vec<AndroidSyncTombstone>,
+}
+
 fn classify_audit_error(error: io::Error) -> String {
     let class = match error.kind() {
         io::ErrorKind::PermissionDenied => "permission",
@@ -499,6 +526,22 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         }
         if request.path.starts_with("/admin/sync") {
             return self.handle_sync_admin(request, correlation);
+        }
+        if request.path == "/android/sync" {
+            if !request.method.eq_ignore_ascii_case("POST") {
+                let mut headers = vec![
+                    ("Content-Type".into(), "application/json".into()),
+                    ("Allow".into(), "POST".into()),
+                ];
+                no_store(&mut headers);
+                add_correlation(&mut headers, &correlation);
+                return any_cal_dav_server::Response {
+                    status: 405,
+                    headers,
+                    body: b"{\"status\":\"error\",\"error\":\"method_not_allowed\"}".to_vec(),
+                };
+            }
+            return self.handle_android_sync(request, correlation);
         }
         if matches!(request.path.as_str(), "/health" | "/status" | "/ready") {
             if request.method != "GET" {
@@ -645,6 +688,328 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         response
     }
 
+    /// Handle the direct Android provider bridge.  The Android account
+    /// adapter sends a pull with no payloads, or a bounded batch of provider
+    /// edits with canonical envelopes.  The repository remains the only
+    /// source of truth: this route never exposes provider row IDs or treats a
+    /// failed Anytype read as an empty collection.
+    fn handle_android_sync(
+        &mut self,
+        request: any_cal_dav_server::Request,
+        correlation: Correlation,
+    ) -> any_cal_dav_server::Response {
+        const MAX_BODY: usize = 4 * 1024 * 1024;
+        if request.body.len() > MAX_BODY {
+            return android_sync_error(
+                413,
+                None,
+                BridgeErrorCode::InvalidRequest,
+                "bridge request is too large",
+                &correlation,
+            );
+        }
+        let body = match std::str::from_utf8(&request.body) {
+            Ok(body) => body,
+            Err(_) => {
+                return android_sync_error(
+                    400,
+                    None,
+                    BridgeErrorCode::InvalidRequest,
+                    "bridge request is not valid UTF-8",
+                    &correlation,
+                )
+            }
+        };
+        let bridge_request = match BridgeRequest::from_json(body) {
+            Ok(request) => request,
+            Err(_) => {
+                return android_sync_error(
+                    400,
+                    None,
+                    BridgeErrorCode::InvalidRequest,
+                    "bridge request is invalid",
+                    &correlation,
+                )
+            }
+        };
+        let Some((collection, expected_kind)) = self.android_collection(&bridge_request.authority)
+        else {
+            return android_sync_error(
+                200,
+                bridge_request.checkpoint,
+                BridgeErrorCode::InvalidRequest,
+                "Android authority is unsupported",
+                &correlation,
+            );
+        };
+
+        if bridge_request.resources.is_empty() && bridge_request.tombstones.is_empty() {
+            self.android_pull(bridge_request, collection, expected_kind, correlation)
+        } else {
+            self.android_push(bridge_request, collection, expected_kind, correlation)
+        }
+    }
+
+    fn android_collection(&self, authority: &str) -> Option<(CollectionId, DavKind)> {
+        match authority {
+            "com.android.contacts" => Some((self.server.contacts.clone(), DavKind::Contact)),
+            // CalendarContract has no separate Anytype collection in the
+            // current configuration. Events share the configured CalDAV
+            // collection with VTODOs and are filtered by kind here.
+            "com.android.calendar" => Some((self.server.tasks.clone(), DavKind::Event)),
+            _ => None,
+        }
+    }
+
+    fn android_pull(
+        &mut self,
+        request: BridgeRequest,
+        collection: CollectionId,
+        expected_kind: DavKind,
+        correlation: Correlation,
+    ) -> any_cal_dav_server::Response {
+        let rows = match self.server.repository.list_resources(&collection, true) {
+            Ok(rows) => rows,
+            Err(error) => {
+                let (status, code, message) = android_repository_error(&error);
+                return android_sync_error(status, request.checkpoint, code, message, &correlation);
+            }
+        };
+        let mut resources = Vec::new();
+        let mut tombstones = Vec::new();
+        let mut decisions = Vec::new();
+        let mut revision = request
+            .checkpoint
+            .as_ref()
+            .map_or(0, |checkpoint| checkpoint.revision);
+        for row in rows {
+            if row.envelope.collection_id != collection || row.envelope.kind != expected_kind {
+                continue;
+            }
+            revision = revision.max(row.envelope.revision);
+            if row.archived {
+                let tombstone_revision = row.envelope.revision.max(1);
+                revision = revision.max(tombstone_revision);
+                let resource_id = row.envelope.resource_id.clone();
+                tombstones.push(AndroidSyncTombstone {
+                    tombstone: BridgeTombstone {
+                        resource_id: resource_id.clone(),
+                        canonical_id: row.envelope.anytype_object_id.to_string(),
+                        revision: tombstone_revision,
+                    },
+                    collection_id: collection.to_string(),
+                });
+                decisions.push(BridgeDecision {
+                    resource_id,
+                    decision: SyncDecision::Archive,
+                    reason: None,
+                });
+            } else {
+                let resource_id = row.envelope.resource_id.clone();
+                resources.push(row.envelope);
+                decisions.push(BridgeDecision {
+                    resource_id,
+                    decision: SyncDecision::Upsert,
+                    reason: None,
+                });
+            }
+        }
+        resources.sort_by(|left, right| left.resource_id.cmp(&right.resource_id));
+        tombstones
+            .sort_by(|left, right| left.tombstone.resource_id.cmp(&right.tombstone.resource_id));
+        decisions.sort_by(|left, right| left.resource_id.cmp(&right.resource_id));
+        let response = BridgeResponse {
+            schema_version: BRIDGE_SCHEMA_VERSION,
+            checkpoint: Some(android_checkpoint(&request.authority, revision)),
+            decisions,
+            error: None,
+        };
+        android_sync_response(200, response, resources, tombstones, &correlation)
+    }
+
+    fn android_push(
+        &mut self,
+        request: BridgeRequest,
+        collection: CollectionId,
+        expected_kind: DavKind,
+        correlation: Correlation,
+    ) -> any_cal_dav_server::Response {
+        if let Err(message) = validate_android_batch(&request, &collection, &expected_kind) {
+            return android_sync_error(
+                200,
+                request.checkpoint,
+                BridgeErrorCode::InvalidRequest,
+                message,
+                &correlation,
+            );
+        }
+        // Resolve identities before any write. This both makes retries
+        // deterministic and ensures an unavailable/read-failed repository
+        // cannot be mistaken for an empty state that authorizes tombstones.
+        let rows = match self.server.repository.list_resources(&collection, true) {
+            Ok(rows) => rows,
+            Err(error) => {
+                let (status, code, message) = android_repository_error(&error);
+                return android_sync_error(status, request.checkpoint, code, message, &correlation);
+            }
+        };
+        let mut decisions = Vec::new();
+        let mut resources = Vec::new();
+        let mut tombstones = Vec::new();
+        let mut revision = request
+            .checkpoint
+            .as_ref()
+            .map_or(0, |checkpoint| checkpoint.revision);
+        for incoming in &request.resources {
+            revision = revision.max(incoming.revision);
+            let existing = rows.iter().find(|row| {
+                row.envelope.resource_id == incoming.resource_id
+                    || row.envelope.anytype_object_id == incoming.anytype_object_id
+                    || row.envelope.dav_uid == incoming.dav_uid
+            });
+            let mut candidate = incoming.clone();
+            candidate.collection_id = collection.clone();
+            let stored = if let Some(existing) = existing {
+                if existing.archived {
+                    return android_sync_error(
+                        200,
+                        request.checkpoint.clone(),
+                        BridgeErrorCode::Conflict,
+                        "provider edit targets an archived resource",
+                        &correlation,
+                    );
+                }
+                // The server's stable IDs win over Android's provider-side
+                // source ID. This prevents a second Anytype object when a
+                // provider replays an edit with a provisional resource ID.
+                candidate.resource_id = existing.envelope.resource_id.clone();
+                candidate.anytype_object_id = existing.envelope.anytype_object_id.clone();
+                candidate.dav_uid = existing.envelope.dav_uid.clone();
+                match self
+                    .server
+                    .repository
+                    .update_resource(candidate, WriteCondition::Unconditional)
+                {
+                    Ok(stored) => stored,
+                    Err(error) => {
+                        let (status, code, message) = android_repository_error(&error);
+                        return android_sync_error(
+                            status,
+                            request.checkpoint.clone(),
+                            code,
+                            message,
+                            &correlation,
+                        );
+                    }
+                }
+            } else {
+                match self
+                    .server
+                    .repository
+                    .create_resource(candidate, WriteCondition::IfNoneMatch)
+                {
+                    Ok(stored) => stored,
+                    Err(error) => {
+                        let (status, code, message) = android_repository_error(&error);
+                        return android_sync_error(
+                            status,
+                            request.checkpoint.clone(),
+                            code,
+                            message,
+                            &correlation,
+                        );
+                    }
+                }
+            };
+            revision = revision.max(stored.envelope.revision);
+            resources.push(stored.envelope);
+            decisions.push(BridgeDecision {
+                resource_id: incoming.resource_id.clone(),
+                decision: SyncDecision::Upsert,
+                reason: None,
+            });
+        }
+        for incoming in &request.tombstones {
+            revision = revision.max(incoming.revision);
+            let existing = rows.iter().find(|row| {
+                row.envelope.resource_id == incoming.resource_id
+                    || row.envelope.anytype_object_id.as_str() == incoming.canonical_id
+                    || row.envelope.dav_uid.as_str() == incoming.canonical_id
+            });
+            if let Some(existing) = existing {
+                if existing.archived {
+                    tombstones.push(AndroidSyncTombstone {
+                        tombstone: incoming.clone(),
+                        collection_id: collection.to_string(),
+                    });
+                    decisions.push(BridgeDecision {
+                        resource_id: incoming.resource_id.clone(),
+                        decision: SyncDecision::Noop,
+                        reason: None,
+                    });
+                    continue;
+                }
+                let stored = match self.server.repository.archive_resource(
+                    &existing.envelope.resource_id,
+                    WriteCondition::Unconditional,
+                ) {
+                    Ok(stored) => stored,
+                    Err(error) => {
+                        let (status, code, message) = android_repository_error(&error);
+                        return android_sync_error(
+                            status,
+                            request.checkpoint.clone(),
+                            code,
+                            message,
+                            &correlation,
+                        );
+                    }
+                };
+                let tombstone_revision = incoming.revision.max(stored.envelope.revision).max(1);
+                revision = revision.max(tombstone_revision);
+                tombstones.push(AndroidSyncTombstone {
+                    tombstone: BridgeTombstone {
+                        resource_id: incoming.resource_id.clone(),
+                        canonical_id: stored.envelope.anytype_object_id.to_string(),
+                        revision: tombstone_revision,
+                    },
+                    collection_id: collection.to_string(),
+                });
+                decisions.push(BridgeDecision {
+                    resource_id: incoming.resource_id.clone(),
+                    decision: SyncDecision::Archive,
+                    reason: None,
+                });
+            } else {
+                tombstones.push(AndroidSyncTombstone {
+                    tombstone: incoming.clone(),
+                    collection_id: collection.to_string(),
+                });
+                decisions.push(BridgeDecision {
+                    resource_id: incoming.resource_id.clone(),
+                    decision: SyncDecision::Noop,
+                    reason: None,
+                });
+            }
+        }
+        resources.sort_by(|left, right| left.resource_id.cmp(&right.resource_id));
+        tombstones
+            .sort_by(|left, right| left.tombstone.resource_id.cmp(&right.tombstone.resource_id));
+        decisions.sort_by(|left, right| left.resource_id.cmp(&right.resource_id));
+        android_sync_response(
+            200,
+            BridgeResponse {
+                schema_version: BRIDGE_SCHEMA_VERSION,
+                checkpoint: Some(android_checkpoint(&request.authority, revision)),
+                decisions,
+                error: None,
+            },
+            resources,
+            tombstones,
+            &correlation,
+        )
+    }
+
     /// OPTIONS is authorized as a read operation, but its Allow header must
     /// not promise writes that this principal cannot perform.  Apply the
     /// same collection/resource ACL and credential capability intersection
@@ -737,12 +1102,47 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         })
     }
     fn authorization_status(&mut self, request: &any_cal_dav_server::Request) -> Option<u16> {
+        if request.path == "/android/sync" {
+            if self.identity.is_some() {
+                return self.android_identity_authorization_status(request);
+            }
+            return (!self.authorized(request)).then_some(401);
+        }
         if self.identity.is_some()
             && !matches!(request.path.as_str(), "/health" | "/status" | "/ready")
         {
             return self.identity_authorization_status(request);
         }
         (!self.authorized(request)).then_some(401)
+    }
+
+    fn android_identity_authorization_status(
+        &mut self,
+        request: &any_cal_dav_server::Request,
+    ) -> Option<u16> {
+        let identity = self.identity.as_ref().expect("identity checked above");
+        let Some(token) = bearer_or_basic_credential(request) else {
+            self.record_auth_event(request, "missing", None);
+            return Some(401);
+        };
+        let Some((principal, AuthOutcome::Authenticated)) =
+            identity.authenticate(token, self.identity_now)
+        else {
+            self.record_auth_event(request, "invalid", None);
+            return Some(401);
+        };
+        let capabilities = identity.capabilities(token, self.identity_now);
+        let account_capable = capabilities.contains(&Capability::ReadContacts)
+            || capabilities.contains(&Capability::WriteContacts)
+            || capabilities.contains(&Capability::ReadTasks)
+            || capabilities.contains(&Capability::WriteTasks);
+        if account_capable {
+            self.record_auth_event(request, "authenticated", Some(&principal));
+            None
+        } else {
+            self.record_auth_event(request, "forbidden", Some(&principal));
+            Some(403)
+        }
     }
 
     fn sync_export_path(&self) -> Option<PathBuf> {
@@ -1593,6 +1993,153 @@ fn safe_request_id(value: &str) -> Option<String> {
         .then(|| value.to_owned())
 }
 
+fn validate_android_batch(
+    request: &BridgeRequest,
+    collection: &CollectionId,
+    expected_kind: &DavKind,
+) -> Result<(), &'static str> {
+    let mut resource_ids = BTreeSet::new();
+    let mut anytype_ids = BTreeSet::<String>::new();
+    let mut dav_uids = BTreeSet::<String>::new();
+    for resource in &request.resources {
+        if &resource.kind != expected_kind {
+            return Err("bridge resource kind does not match the Android authority");
+        }
+        let logical_collection = match expected_kind {
+            DavKind::Contact => resource.collection_id.as_str() == "contacts",
+            DavKind::Event => {
+                resource.collection_id.as_str() == "tasks"
+                    || resource.collection_id.as_str() == "calendar"
+            }
+            _ => false,
+        };
+        if resource.collection_id != *collection && !logical_collection {
+            return Err("bridge resource is outside the configured collection");
+        }
+        if !resource_ids.insert(resource.resource_id.clone())
+            || !anytype_ids.insert(resource.anytype_object_id.to_string())
+            || !dav_uids.insert(resource.dav_uid.to_string())
+        {
+            return Err("bridge resource identities must be unique");
+        }
+    }
+    let mut tombstone_ids = BTreeSet::new();
+    let mut tombstone_canonical_ids = BTreeSet::new();
+    for tombstone in &request.tombstones {
+        if tombstone.revision == 0 {
+            return Err("bridge tombstone revision must be positive");
+        }
+        if !tombstone_ids.insert(tombstone.resource_id.clone())
+            || !tombstone_canonical_ids.insert(tombstone.canonical_id.clone())
+        {
+            return Err("bridge tombstone identities must be unique");
+        }
+        if resource_ids.contains(&tombstone.resource_id)
+            || anytype_ids.contains(&tombstone.canonical_id)
+            || dav_uids.contains(&tombstone.canonical_id)
+        {
+            return Err("bridge resource and tombstone identities overlap");
+        }
+    }
+    Ok(())
+}
+
+fn android_checkpoint(authority: &str, revision: u64) -> BridgeCheckpoint {
+    BridgeCheckpoint {
+        cursor: format!("android:{authority}:{revision}"),
+        revision,
+    }
+}
+
+fn android_repository_error(error: &RepositoryError) -> (u16, BridgeErrorCode, &'static str) {
+    match error {
+        RepositoryError::Auth => (401, BridgeErrorCode::PermissionDenied, "sync access denied"),
+        RepositoryError::Forbidden => {
+            (403, BridgeErrorCode::PermissionDenied, "sync access denied")
+        }
+        RepositoryError::IdentityAlreadyExists(_)
+        | RepositoryError::ResourceAlreadyExists(_)
+        | RepositoryError::PreconditionFailed { .. } => {
+            (409, BridgeErrorCode::Conflict, "Anytype resource conflict")
+        }
+        RepositoryError::CollectionNotFound(_) => (
+            503,
+            BridgeErrorCode::NotLinked,
+            "configured Anytype collection is unavailable",
+        ),
+        RepositoryError::ResourceNotFound(_) => (
+            409,
+            BridgeErrorCode::Conflict,
+            "Anytype resource is unavailable",
+        ),
+        RepositoryError::InvalidEnvelope(_) => (
+            400,
+            BridgeErrorCode::InvalidRequest,
+            "Anytype resource is invalid",
+        ),
+        RepositoryError::Timeout
+        | RepositoryError::RateLimited
+        | RepositoryError::Unavailable
+        | RepositoryError::MalformedState
+        | RepositoryError::ArchiveFailure
+        | RepositoryError::ReadAfterWriteDelay
+        | RepositoryError::CollectionAlreadyExists(_) => (
+            503,
+            BridgeErrorCode::TransportUnavailable,
+            "Anytype service is unavailable",
+        ),
+    }
+}
+
+fn android_sync_response(
+    status: u16,
+    bridge: BridgeResponse,
+    resources: Vec<ResourceEnvelope>,
+    tombstones: Vec<AndroidSyncTombstone>,
+    correlation: &Correlation,
+) -> any_cal_dav_server::Response {
+    let wire = AndroidSyncResponse {
+        bridge,
+        resources,
+        tombstones,
+    };
+    let body = serde_json::to_vec(&wire).unwrap_or_else(|_| {
+        b"{\"schema_version\":1,\"checkpoint\":null,\"decisions\":[],\"error\":{\"code\":\"transport_unavailable\",\"message\":\"bridge response failed\"},\"resources\":[],\"tombstones\":[]}".to_vec()
+    });
+    let mut headers = vec![("Content-Type".into(), "application/json".into())];
+    no_store(&mut headers);
+    add_correlation(&mut headers, correlation);
+    any_cal_dav_server::Response {
+        status,
+        headers,
+        body,
+    }
+}
+
+fn android_sync_error(
+    status: u16,
+    checkpoint: Option<BridgeCheckpoint>,
+    code: BridgeErrorCode,
+    message: &'static str,
+    correlation: &Correlation,
+) -> any_cal_dav_server::Response {
+    android_sync_response(
+        status,
+        BridgeResponse {
+            schema_version: BRIDGE_SCHEMA_VERSION,
+            checkpoint,
+            decisions: Vec::new(),
+            error: Some(BridgeError {
+                code,
+                message: message.into(),
+            }),
+        },
+        Vec::new(),
+        Vec::new(),
+        correlation,
+    )
+}
+
 fn connection_requests_close(headers: &[(String, String)]) -> bool {
     headers.iter().any(|(key, value)| {
         key.eq_ignore_ascii_case("connection")
@@ -1950,7 +2497,7 @@ mod framing_tests {
 
     #[test]
     fn app_reader_handles_two_framed_requests_without_eof() {
-        let bytes = b"GET /health HTTP/1.1\r\nContent-Length: 0\r\n\r\nPUT /status HTTP/1.1\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
+        let bytes = b"GET /health HTTP/1.1\r\nContent-Length: 0\r\n\r\nGET /status HTTP/1.1\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
         let mut stream = Cursor::new(bytes.as_slice());
         let mut app = App::fake({
             let mut config = AppConfig::defaults();
