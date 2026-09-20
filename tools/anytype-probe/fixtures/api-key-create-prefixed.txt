@@ -1,0 +1,3 @@
+✔ API key created successfully
+INFO: Name: SYNTHETIC_API_KEY_NAME
+INFO: Key: SYNTHETIC_API_KEY_VALUE_NOT_REAL

@@ -1,0 +1,34 @@
+# Sanitized CardDAV lifecycle profile (request bodies are literal below).
+OPTIONS /carddav/contacts (Host: dav.example.test; X-Forwarded-Proto: https) => 200
+EXPECT-HEADER DAV: 1, 3, addressbook
+PROPFIND /carddav/contacts (Depth: 0) => 207
+EXPECT-HEADER Content-Type: application/xml
+PUT /carddav/contacts/replay.vcf (Content-Type: text/vcard; If-None-Match: *) => 201
+EXPECT-HEADER Content-Type: text/vcard
+EXPECT-HEADER Location: /carddav/contacts/replay.vcf
+EXPECT-HEADER ETag: *
+BEGIN:VCARD
+VERSION:4.0
+UID:replay-contact
+FN:Replay Contact
+TEL;TYPE=cell:+460000
+X-REPLAY-OPAQUE:kept
+END:VCARD
+GET /carddav/contacts/replay.vcf => 200
+EXPECT-HEADER Content-Type: text/vcard
+EXPECT-HEADER ETag: *
+EXPECT Replay Contact
+PUT /carddav/contacts/replay.vcf (Content-Type: text/vcard; If-Match: $ETAG) => 204
+EXPECT-HEADER ETag: *
+BEGIN:VCARD
+VERSION:4.0
+UID:replay-contact
+FN:Replay Contact Edited
+X-REPLAY-OPAQUE:kept
+END:VCARD
+GET /carddav/contacts/replay.vcf => 200
+EXPECT Replay Contact Edited
+DELETE /carddav/contacts/replay.vcf (If-Match: $ETAG) => 204
+GET /carddav/contacts/replay.vcf => 404
+DELETE /carddav/contacts/replay.vcf => 404
+GET /carddav/contacts/replay.vcf => 404

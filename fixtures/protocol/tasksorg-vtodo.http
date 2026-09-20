@@ -1,0 +1,36 @@
+# Sanitized Tasks.org-style VTODO lifecycle profile.
+OPTIONS /caldav/tasks (Host: dav.example.test; X-Forwarded-Proto: https) => 200
+EXPECT-HEADER DAV: 1, 3, calendar-access
+PROPFIND /caldav/tasks (Depth: 1) => 207
+EXPECT-HEADER Content-Type: application/xml
+PUT /caldav/tasks/replay.ics (Content-Type: text/calendar; If-None-Match: *) => 201
+EXPECT-HEADER Content-Type: text/calendar
+EXPECT-HEADER Location: /caldav/tasks/replay.ics
+EXPECT-HEADER ETag: *
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VTODO
+UID:replay-task
+SUMMARY:Replay task
+STATUS:NEEDS-ACTION
+CATEGORIES:replay
+X-TASKSORG-OPAQUE:kept
+END:VTODO
+END:VCALENDAR
+REPORT /caldav/tasks (calendar-multiget) => 207
+EXPECT-HEADER Content-Type: application/xml
+EXPECT replay-task
+PUT /caldav/tasks/replay.ics (Content-Type: text/calendar; If-Match: $ETAG) => 204
+EXPECT-HEADER ETag: *
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VTODO
+UID:replay-task
+SUMMARY:Completed task
+STATUS:COMPLETED
+END:VTODO
+END:VCALENDAR
+REPORT /caldav/tasks (calendar-multiget) => 207
+EXPECT-HEADER Content-Type: application/xml
+EXPECT Completed task
+DELETE /caldav/tasks/replay.ics => 204

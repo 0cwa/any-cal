@@ -1,0 +1,7 @@
+BEGIN:VCARD
+VERSION:4.0
+UID:replay-contact
+FN:Replay Contact
+TEL;TYPE=cell:+460000
+X-REPLAY-OPAQUE:kept
+END:VCARD
