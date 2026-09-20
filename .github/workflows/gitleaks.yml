@@ -20,6 +20,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Reject tracked private and generated paths
+        run: scripts/security/check-public-tree.sh
+
       - name: Scan repository history and working tree
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:

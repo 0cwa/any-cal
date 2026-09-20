@@ -7,7 +7,8 @@ mkdir -p -- "$ANY_CAL_TMP_ROOT"
 : "${ANDROID_SDK_ROOT:=/opt/android-sdk}"
 : "${ANDROID_NDK_VERSION:=27.2.12479018}"
 : "${GRADLE_VERSION:=8.10.2}"
-: "${RUST_TOOLCHAIN:=stable}"
+: "${RUST_TOOLCHAIN:=1.98.1}"
+: "${CARGO_NDK_VERSION:=4.1.2}"
 
 export ANDROID_HOME="$ANDROID_SDK_ROOT"
 export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$HOME/.cargo/bin:$PATH"
@@ -46,7 +47,7 @@ fi
 rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
 rustup default "$RUST_TOOLCHAIN"
 rustup target add aarch64-linux-android x86_64-linux-android
-cargo install cargo-ndk --locked
+cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
 
 echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION"
@@ -57,4 +58,5 @@ rustc --version
 cargo --version
 cargo ndk --version
 echo "NDK_VERSION=$ANDROID_NDK_VERSION"
+echo "CARGO_NDK_VERSION=$CARGO_NDK_VERSION"
 echo 'android-native-build toolchain provisioning: PASS'

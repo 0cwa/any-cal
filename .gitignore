@@ -3,6 +3,7 @@
 
 # Rust and Android build outputs.
 target/
+tmp/
 android/**/build/
 android/**/.gradle/
 .gradle/

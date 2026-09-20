@@ -8,7 +8,8 @@ clean CI runner.
 ## Preflight and build
 
 Provision JDK 17, Gradle 8.10.2, Android command-line tools, API 35,
-Build-Tools 34, NDK 27.2.12479018, Rust, and `cargo-ndk`. Then run from the
+Build-Tools 34, NDK 27.2.12479018, Rust 1.98.1, and `cargo-ndk` 4.1.2. The
+repository `rust-toolchain.toml` selects Rust 1.98.1. Then run from the
 repository root:
 
 ```sh

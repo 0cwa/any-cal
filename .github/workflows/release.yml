@@ -50,7 +50,6 @@ jobs:
 
       - name: Build release stage
         run: |
-          mkdir -p "$RUNNER_TEMP/any-cal-stage"
           env -u LD_PRELOAD packaging/release.sh --stage "$RUNNER_TEMP/any-cal-stage"
           tar -C "$RUNNER_TEMP/any-cal-stage" \
             -czf "$RUNNER_TEMP/any-cal-${{ matrix.name }}.tar.gz" .
@@ -70,6 +69,7 @@ jobs:
       CARGO_TERM_COLOR: always
       ANDROID_NDK_VERSION: 27.2.12479018
       GRADLE_VERSION: 8.10.2
+      CARGO_NDK_VERSION: 4.1.2
       TMPDIR: ${{ github.workspace }}/tmp
       CARGO_TARGET_DIR: ${{ github.workspace }}/tmp/cargo-target
       GRADLE_USER_HOME: ${{ github.workspace }}/tmp/gradle-home
@@ -106,7 +106,7 @@ jobs:
       - name: Add Android Rust targets
         run: |
           rustup target add aarch64-linux-android x86_64-linux-android
-          cargo install cargo-ndk --locked
+          cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
 
       - name: Build Android release APK
         run: |

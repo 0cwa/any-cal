@@ -1,8 +1,9 @@
 title = "Any-Cal secret scanning"
 
-# Use the upstream rules and only exclude outputs that are never publication
-# inputs. Application source, documentation, fixtures, and scripts remain
-# covered by the default rules.
+# Use the upstream rules and exclude only untracked outputs that are never
+# publication inputs. `scripts/security/check-public-tree.sh` rejects these
+# paths if they appear in the index or reachable history, so this allowlist
+# cannot turn a tracked private/generated path into a publication blind spot.
 [extend]
 useDefault = true
 

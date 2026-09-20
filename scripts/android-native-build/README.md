@@ -12,6 +12,9 @@ GRADLE_BIN=/opt/gradle/gradle-8.10.2/bin/gradle \
   scripts/android-native-build/preflight.sh
 ```
 
+The pinned native toolchain is Rust 1.98.1 from the repository
+`rust-toolchain.toml` and `cargo-ndk` 4.1.2. Install the latter with
+`cargo install cargo-ndk --version 4.1.2 --locked` before running the lane.
 The preflight reports JDK, Gradle, Cargo, `cargo-ndk`, installed NDK versions,
 and whether any `Cargo.toml` declares `crate-type = ["cdylib"]`. It exits 3
 when native source is not ready.
@@ -51,5 +54,5 @@ msb create ubuntu:24.04 -n any-cal-android-native-build \
 ```
 
 Install JDK 17, Gradle 8.10.2, Android command-line tools, the pinned NDK,
-Rust/cargo, and cargo-ndk inside that VM only. Stop and remove the VM after
+Rust 1.98.1, and cargo-ndk 4.1.2 inside that VM only. Stop and remove the VM after
 evidence capture.
