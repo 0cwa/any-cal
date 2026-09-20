@@ -1,0 +1,21 @@
+# Local state, credentials, and generated test data.
+.local/
+
+# Rust and Android build outputs.
+target/
+android/**/build/
+android/**/.gradle/
+.gradle/
+
+# Python and packaged artifacts generated during local validation.
+__pycache__/
+*.py[cod]
+*.apk
+*.aab
+*.iml
+
+# Local orchestration state and live-operation receipts. The durable design
+# plans and sanitized current-state summaries under docs/plan remain publishable.
+docs/plan/work-ledger*.json
+docs/plan/work-units/
+docs/plan/safe-change-run-*.json

@@ -1,0 +1,19 @@
+title = "Any-Cal secret scanning"
+
+# Use the upstream rules and only exclude outputs that are never publication
+# inputs. Application source, documentation, fixtures, and scripts remain
+# covered by the default rules.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated or private workspace state excluded from the public tree"
+paths = [
+  '''(^|/)\.local(?:/|$)''',
+  '''(^|/)tmp(?:/|$)''',
+  '''(^|/)target(?:/|$)''',
+  '''(^|/)android/.*/build(?:/|$)''',
+  '''(^|/)android/.*/\.gradle(?:/|$)''',
+  '''(^|/)\.gradle(?:/|$)''',
+  '''(^|/)scripts/__pycache__(?:/|$)''',
+]
