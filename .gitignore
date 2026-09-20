@@ -10,8 +10,6 @@ android/**/.gradle/
 # Python and packaged artifacts generated during local validation.
 __pycache__/
 *.py[cod]
-*.apk
-*.aab
 *.iml
 
 # Local orchestration state and live-operation receipts. The durable design
