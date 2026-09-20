@@ -1,0 +1,16 @@
+{
+  "object": {
+    "id": "server-object-1",
+    "space_id": "space-1",
+    "type": {"key": "page", "name": "Page"},
+    "name": "Ada Lovelace",
+    "markdown": "{\"canonical\":true}",
+    "properties": [
+      {"key": "dav_uid", "name": "DAV UID", "format": "text", "text": "dav-uid-1"},
+      {"key": "done", "name": "Done", "format": "checkbox", "checkbox": false},
+      {"key": "score", "name": "Score", "format": "number", "number": 3.5},
+      {"key": "related", "name": "Related", "format": "objects", "objects": ["server-object-2"]}
+    ],
+    "archived": false
+  }
+}

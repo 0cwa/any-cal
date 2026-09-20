@@ -1,0 +1,1 @@
+{"data":[{"id":"server-object-1","space_id":"space-demo","type":{"key":"page","name":"Page"},"name":"Zoë","snippet":"line one","properties":[{"key":"dav_uid","name":"DAV UID","format":"text","text":"dav-uid-1"}],"archived":false}],"pagination":{"has_more":true,"offset":0,"limit":1,"total":2}}

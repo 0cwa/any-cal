@@ -1,0 +1,11 @@
+{
+  "typed_property_links": [
+    {"key": "description", "text": "hello"},
+    {"key": "done", "checkbox": true},
+    {"key": "related", "objects": ["object-a", "object-b"]}
+  ],
+  "response_properties": [
+    {"key": "description", "name": "Description", "format": "text", "text": "hello"},
+    {"key": "done", "name": "Done", "format": "checkbox", "checkbox": true}
+  ]
+}
