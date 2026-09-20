@@ -1,0 +1,154 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  desktop:
+    name: desktop-${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: macos-arm64
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TERM_COLOR: always
+      TMPDIR: ${{ github.workspace }}/tmp
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare repository-local temporary tree
+        run: mkdir -p "$TMPDIR"
+
+      - name: Restore Cargo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Fetch locked dependencies
+        run: env -u LD_PRELOAD cargo fetch --locked
+
+      - name: Build release stage
+        run: |
+          mkdir -p "$RUNNER_TEMP/any-cal-stage"
+          env -u LD_PRELOAD packaging/release.sh --stage "$RUNNER_TEMP/any-cal-stage"
+          tar -C "$RUNNER_TEMP/any-cal-stage" \
+            -czf "$RUNNER_TEMP/any-cal-${{ matrix.name }}.tar.gz" .
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: any-cal-${{ matrix.name }}
+          path: ${{ runner.temp }}/any-cal-${{ matrix.name }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: android-api35
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_TERM_COLOR: always
+      ANDROID_NDK_VERSION: 27.2.12479018
+      GRADLE_VERSION: 8.10.2
+      TMPDIR: ${{ github.workspace }}/tmp
+      CARGO_TARGET_DIR: ${{ github.workspace }}/tmp/cargo-target
+      GRADLE_USER_HOME: ${{ github.workspace }}/tmp/gradle-home
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare repository-local temporary tree
+        run: mkdir -p "$TMPDIR"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+
+      - name: Install Android API, build tools, and NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager \
+            'platform-tools' \
+            'platforms;android-35' \
+            'build-tools;34.0.0' \
+            "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Add Android Rust targets
+        run: |
+          rustup target add aarch64-linux-android x86_64-linux-android
+          cargo install cargo-ndk --locked
+
+      - name: Build Android release APK
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$ANDROID_HOME"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
+          export GRADLE_BIN=gradle
+          export NATIVE_CRATE_DIR="$GITHUB_WORKSPACE/crates/android-bridge"
+          env -u LD_PRELOAD scripts/android-build/build-and-test.sh
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: any-cal-android-api35
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: publish-${{ github.ref_name }}
+    needs: [desktop, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: any-cal-*
+          merge-multiple: true
+          path: release-artifacts
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=(release-artifacts/*)
+          test "${#files[@]}" -gt 0
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "${files[@]}"
+          fi
