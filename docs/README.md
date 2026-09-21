@@ -25,6 +25,7 @@ Then read only the domain documents relevant to the change.
 
 These documents are maintained as durable design or operational contracts:
 
+- Domain/Space routing contract: [plan/domain-bindings.md](plan/domain-bindings.md)
 - Anytype transport: [plan/anytype-transport-architecture.md](plan/anytype-transport-architecture.md)
 - Client interoperability: [plan/client-compatibility.md](plan/client-compatibility.md)
 - LAN/security boundary: [plan/lan-security.md](plan/lan-security.md)

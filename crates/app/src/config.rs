@@ -1,4 +1,4 @@
-use any_cal_core::CollectionId;
+use any_cal_core::{CollectionId, DomainBindings};
 use std::fs;
 use std::net::ToSocketAddrs;
 use std::path::Path;
@@ -163,6 +163,16 @@ impl AppConfig {
         }
         Ok(())
     }
+    pub fn domain_bindings(&self) -> Result<DomainBindings, ConfigError> {
+        self.validate()?;
+        DomainBindings::legacy_single_space(
+            self.space_id.clone(),
+            &self.contacts_collection,
+            &self.tasks_collection,
+        )
+        .map_err(|_| ConfigError::Invalid("invalid domain binding configuration".into()))
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.endpoint.trim().is_empty() {
             return Err(ConfigError::Missing("endpoint"));
