@@ -66,3 +66,22 @@ This API is the persistence seam for the Space-qualified routing work in issue #
 The application currently still opens legacy unscoped checkpoints; switching the app
 to `open_scoped` belongs in a separate wiring slice so the runtime can derive the
 scope from the exact resolved domain binding rather than guessing from scalar config.
+
+
+### Current application scope derivation
+
+When the current single-Space app has a sync checkpoint configured, startup derives its
+`SyncScope` from the `legacy-default` domain binding.
+
+The endpoint is stored only as a SHA-256 fingerprint. The upstream account context is
+also persisted only as a fingerprint:
+
+- when an Anytype token is configured, the fingerprint is domain-separated from that
+  token; the raw token is never stored in the checkpoint;
+- when no token exists (for example deterministic fake/custom transports), the actual
+  transport mode supplies the non-secret account-context seed.
+
+This is intentionally conservative. Rotating a token changes the scope and refuses the
+old checkpoint rather than risking replay under a different account. Once read-only
+upstream account discovery provides a stable account identifier, that identifier should
+replace the credential-derived proxy with an explicit migration decision.
