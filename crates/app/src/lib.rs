@@ -2679,26 +2679,46 @@ mod framing_tests {
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let mut app = test_app();
-            app.serve_listener_with_limits(listener, 1, Some(2))
+            app.serve_listener_with_limits(listener, 1, Some(3))
         });
 
-        let mut slow = TcpStream::connect(address).unwrap();
-        slow.write_all(
-            b"GET /health HTTP/1.1\r\nHost: slow\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n",
-        )
-            .unwrap();
-        slow.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        let slow_response = read_response_headers(&mut slow);
-        assert!(slow_response.starts_with("HTTP/1.1 200 OK\r\n"));
+        let mut clients = (0..3)
+            .map(|_| TcpStream::connect(address).unwrap())
+            .collect::<Vec<_>>();
+        for client in &mut clients {
+            client
+                .write_all(
+                    b"GET /health HTTP/1.1\r\nHost: limit-test\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n",
+                )
+                .unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+        }
 
-        let mut rejected = TcpStream::connect(address).unwrap();
-        rejected
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let response = read_response(&mut rejected);
-        assert!(response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+        // TCP accept order is not observable by the test, so assert the
+        // admitted/rejected split rather than assigning a response to a
+        // particular client.
+        let responses = clients
+            .iter_mut()
+            .map(read_response_headers)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            responses
+                .iter()
+                .filter(|response| response.starts_with("HTTP/1.1 200 OK\r\n"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            responses
+                .iter()
+                .filter(|response| { response.starts_with("HTTP/1.1 503 Service Unavailable\r\n") })
+                .count(),
+            2
+        );
 
-        drop(slow);
+        drop(clients);
         assert!(server.join().unwrap().is_ok());
     }
 }
