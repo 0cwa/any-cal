@@ -1864,6 +1864,9 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                     }
                     Err(error) => return Err(error),
                 };
+                // BSD/macOS accept inherits the nonblocking listener flag;
+                // our per-connection workers require blocking I/O with timeouts.
+                stream.set_nonblocking(false)?;
                 stream.set_read_timeout(Some(Duration::from_secs(5)))?;
                 stream.set_write_timeout(Some(Duration::from_secs(5)))?;
                 accepted = accepted.saturating_add(1);
@@ -2713,7 +2716,8 @@ mod framing_tests {
                 .iter()
                 .filter(|response| { response.starts_with("HTTP/1.1 503 Service Unavailable\r\n") })
                 .count(),
-            2
+            2,
+            "unexpected overload responses: {rejected_responses:?}"
         );
 
         drop(admitted);
