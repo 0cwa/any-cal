@@ -2700,18 +2700,14 @@ mod framing_tests {
         let admitted_response = read_response_headers(&mut admitted);
         assert!(admitted_response.starts_with("HTTP/1.1 200 OK\r\n"));
 
-        let mut rejected = (0..2)
-            .map(|_| TcpStream::connect(address).unwrap())
-            .collect::<Vec<_>>();
-        for client in &mut rejected {
-            client
+        let mut rejected_responses = Vec::new();
+        for _ in 0..2 {
+            let mut rejected = TcpStream::connect(address).unwrap();
+            rejected
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
+            rejected_responses.push(read_response_headers(&mut rejected));
         }
-        let rejected_responses = rejected
-            .iter_mut()
-            .map(read_response_headers)
-            .collect::<Vec<_>>();
         assert_eq!(
             rejected_responses
                 .iter()
@@ -2720,7 +2716,6 @@ mod framing_tests {
             2
         );
 
-        drop(rejected);
         drop(admitted);
         assert!(server.join().unwrap().is_ok());
     }
