@@ -279,10 +279,7 @@ impl SyncStore {
         Self::open_with_scope(path.into(), None)
     }
 
-    pub fn open_scoped(
-        path: impl Into<PathBuf>,
-        scope: SyncScope,
-    ) -> Result<Self, StoreError> {
+    pub fn open_scoped(path: impl Into<PathBuf>, scope: SyncScope) -> Result<Self, StoreError> {
         validate_scope(&scope)?;
         Self::open_with_scope(path.into(), Some(scope))
     }
@@ -771,10 +768,7 @@ fn validate_scope(scope: &SyncScope) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn bind_scope(
-    state: &mut SyncState,
-    expected_scope: Option<SyncScope>,
-) -> Result<(), StoreError> {
+fn bind_scope(state: &mut SyncState, expected_scope: Option<SyncScope>) -> Result<(), StoreError> {
     match (state.scope.as_ref(), expected_scope) {
         (Some(_), None) => Err(StoreError::Invalid(
             "scoped checkpoint requires an expected binding scope".into(),
@@ -910,7 +904,9 @@ mod tests {
         {
             let mut store = SyncStore::open_scoped(&p, expected.clone()).unwrap();
             assert_eq!(store.scope(), Some(&expected));
-            store.enqueue(op("bound-op", OperationKind::Update)).unwrap();
+            store
+                .enqueue(op("bound-op", OperationKind::Update))
+                .unwrap();
         }
 
         {
@@ -939,10 +935,7 @@ mod tests {
             ),
             Err(StoreError::Invalid(_))
         ));
-        assert!(matches!(
-            SyncStore::open(&p),
-            Err(StoreError::Invalid(_))
-        ));
+        assert!(matches!(SyncStore::open(&p), Err(StoreError::Invalid(_))));
         clean(&p);
     }
 
@@ -951,7 +944,9 @@ mod tests {
         let p = path();
         {
             let mut legacy = SyncStore::open(&p).unwrap();
-            legacy.enqueue(op("legacy-op", OperationKind::Update)).unwrap();
+            legacy
+                .enqueue(op("legacy-op", OperationKind::Update))
+                .unwrap();
         }
 
         assert!(matches!(
@@ -970,10 +965,8 @@ mod tests {
         let source = path().with_extension("source.json");
         let export = source.with_extension("export");
 
-        let destination_scope =
-            scope("space-a", "account-a", "https://anytype.example.test");
-        let source_scope =
-            scope("space-b", "account-a", "https://anytype.example.test");
+        let destination_scope = scope("space-a", "account-a", "https://anytype.example.test");
+        let source_scope = scope("space-b", "account-a", "https://anytype.example.test");
 
         let mut destination_store =
             SyncStore::open_scoped(&destination, destination_scope.clone()).unwrap();
@@ -983,8 +976,7 @@ mod tests {
         let before = destination_store.state().clone();
 
         {
-            let mut source_store =
-                SyncStore::open_scoped(&source, source_scope).unwrap();
+            let mut source_store = SyncStore::open_scoped(&source, source_scope).unwrap();
             source_store
                 .enqueue(op("source-op", OperationKind::Create))
                 .unwrap();
