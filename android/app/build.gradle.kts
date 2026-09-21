@@ -28,5 +28,6 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("rustls:rustls-platform-verifier:latest.release")
     testImplementation("junit:junit:4.13.2")
 }

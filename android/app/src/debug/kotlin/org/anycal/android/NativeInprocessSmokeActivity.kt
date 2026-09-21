@@ -13,8 +13,9 @@ class NativeInprocessSmokeActivity : Activity() {
                 val available = NativeRustBridge.available()
                 val negotiate = NativeRustBridge.negotiate()
                 val health = NativeRustBridge.health()
-                Log.i(TAG, "stage=readiness available=$available negotiate=$negotiate health=$health")
-                check(available && negotiate && health) { "native readiness failed" }
+                val verifier = NativeRustBridge.initializeVerifier(this)
+                Log.i(TAG, "stage=readiness available=$available negotiate=$negotiate health=$health verifier_initialized=$verifier")
+                check(available && negotiate && health && verifier) { "native readiness failed" }
                 val valid = BridgeRequest(
                     accountName = "space-a",
                     accountType = "org.anycal",
@@ -31,7 +32,7 @@ class NativeInprocessSmokeActivity : Activity() {
                 val malformedError = runCatching { NativeRustBridge.requestJson(malformed) }.exceptionOrNull()
                 Log.i(TAG, "stage=malformed error=${malformedError?.javaClass?.simpleName} redacted=true")
                 check(malformedError is IllegalArgumentException)
-                Log.i(TAG, "available=$available negotiate=$negotiate health=$health valid_not_linked=true malformed=redacted")
+                Log.i(TAG, "available=$available negotiate=$negotiate health=$health verifier_initialized=$verifier valid_not_linked=true malformed=redacted")
                 setResult(RESULT_OK)
             } catch (error: Throwable) {
                 Log.e(TAG, "in-process native smoke failed: ${error::class.java.simpleName}")

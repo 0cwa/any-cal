@@ -1,18 +1,21 @@
 # Secure Anytype transport for Android
 
-**Status:** transport implementation present; host certificate and Android
-runtime acceptance remain pending. No credentials are recorded in this plan.
+**Status:** native transport and Android verifier initialization are present;
+host verifier configuration is tested, while Android trusted-endpoint runtime
+acceptance remains pending. No credentials are recorded in this plan.
 
 ## Current acceptance gap
 
-`HttpAnytypeTransport` now accepts `http://` and `https://` endpoints. HTTPS
-uses rustls with `rustls-platform-verifier`, validates the endpoint authority
-and server name, and applies bounded connect/read/write timeouts
-([source](../../crates/anytype-adapter/src/lib.rs)). The transport tests include
-certificate/hostname failure coverage, but that socket-backed test is ignored
-in the restricted execution environment. No host certificate matrix, Android
-trust-store/runtime receipt, proxy validation, or live Anytype HTTPS run exists
-yet, so the native bridge must not claim production HTTPS readiness.
+`HttpAnytypeTransport` and the Android native bridge accept `http://` and
+`https://` endpoints. HTTPS uses rustls with
+`rustls-platform-verifier`, validates the endpoint authority and server name,
+and applies bounded connect/read/write timeouts. The Android bridge now aligns
+with the verifier's JNI 0.22 API, exposes an explicit JVM/context
+initialization entrypoint, and resolves the verifier support AAR from the
+Cargo dependency metadata. Secure requests fail closed until initialization
+has succeeded. Host configuration and parser/error tests pass, but no
+Android trusted-endpoint runtime receipt or live Anytype HTTPS run exists;
+production HTTPS readiness must not be claimed.
 
 ## Evidence-backed options
 
@@ -146,9 +149,10 @@ without including tokens or personal payloads.
 
 ## Android packaging constraints
 
-The workspace currently has no UniFFI/JNI/NDK dependency, Android native
-library packaging, or Android SDK/Gradle toolchain receipt. Before choosing a
-native TLS backend, provision a disposable API-35 build with pinned:
+The workspace now has a JNI native bridge and Android native-library
+packaging, but a local release build still requires the pinned NDK/Gradle
+toolchain. Before claiming Android trust, provision a disposable API-35 build
+with pinned:
 
 ```text
 Rust toolchain + Cargo.lock

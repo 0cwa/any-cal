@@ -5,6 +5,7 @@ import android.accounts.Account
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import org.anycal.android.BridgeRuntimeConfig
+import org.anycal.android.NativeRustBridge
 import org.anycal.android.RustSyncBridgeFactory
 import org.anycal.android.ProviderCapabilities
 import org.anycal.android.tasks.TasksOrgSyncFactory
@@ -12,6 +13,7 @@ import org.anycal.android.tasks.TasksOrgSyncFactory
 /** WorkManager hook for bounded bridge readiness checks; unavailable bridges fail closed. */
 class AnyCalSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
+        if (!NativeRustBridge.initializeVerifier(applicationContext)) return Result.failure()
         val prefs = applicationContext.getSharedPreferences("anycal_bridge", android.content.Context.MODE_PRIVATE)
         val bridge = RustSyncBridgeFactory.create(BridgeRuntimeConfig(
             prefs.getString("endpoint", "") ?: "",

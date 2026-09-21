@@ -2,9 +2,11 @@ use any_cal_core::{
     BridgeError, BridgeErrorCode, BridgeRequest, BridgeResponse, BRIDGE_SCHEMA_VERSION,
 };
 use jni::{
-    objects::{JClass, JString},
+    jni_str,
+    objects::{JClass, JObject, JString},
+    strings::JNIString,
     sys::{jint, jstring},
-    JNIEnv,
+    Env, EnvUnowned,
 };
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
@@ -29,95 +31,122 @@ fn error_response(code: BridgeErrorCode, message: impl Into<String>) -> BridgeRe
 
 #[no_mangle]
 pub extern "system" fn Java_org_anycal_android_NativeRustBridge_nativeSchemaVersion(
-    _env: JNIEnv,
-    _class: JClass,
+    _env: EnvUnowned<'_>,
+    _class: JClass<'_>,
 ) -> jint {
     BRIDGE_SCHEMA_VERSION as jint
 }
 
 #[no_mangle]
 pub extern "system" fn Java_org_anycal_android_NativeRustBridge_nativeHealth(
-    _env: JNIEnv,
-    _class: JClass,
+    _env: EnvUnowned<'_>,
+    _class: JClass<'_>,
 ) -> jint {
     1
 }
 
+/// Initializes rustls-platform-verifier with the Android process JVM and
+/// application context before any HTTPS exchange is attempted.
+#[no_mangle]
+pub extern "system" fn Java_org_anycal_android_NativeRustBridge_nativeInitializeVerifier(
+    mut env: EnvUnowned<'_>,
+    _class: JClass<'_>,
+    context: JObject<'_>,
+) -> jint {
+    #[cfg(target_os = "android")]
+    {
+        return env
+            .with_env(|env| {
+                rustls_platform_verifier::android::init_with_env(env, context)?;
+                Ok::<jint, jni::errors::Error>(1)
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>();
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (&mut env, context);
+        1
+    }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_org_anycal_android_NativeRustBridge_nativeBridgeJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    request: JString,
-    endpoint: JString,
-    credential: JString,
+    mut env: EnvUnowned<'_>,
+    _class: JClass<'_>,
+    request: JString<'_>,
+    endpoint: JString<'_>,
+    credential: JString<'_>,
 ) -> jstring {
-    let input = match env.get_string(&request) {
-        Ok(value) => value.to_string_lossy().into_owned(),
-        Err(error) => {
-            return response_string(
-                &mut env,
-                error_response(
-                    BridgeErrorCode::InvalidRequest,
-                    format!("request string unavailable: ${error}"),
-                ),
-            )
-        }
-    };
-    let endpoint = match env.get_string(&endpoint) {
-        Ok(value) => value.to_string_lossy().into_owned(),
-        Err(_) => {
-            return response_string(
-                &mut env,
-                error_response(
-                    BridgeErrorCode::InvalidRequest,
-                    "bridge endpoint is unavailable",
-                ),
-            )
-        }
-    };
-    let credential = match env.get_string(&credential) {
-        Ok(value) => value.to_string_lossy().into_owned(),
-        Err(_) => {
-            return response_string(
-                &mut env,
-                error_response(
-                    BridgeErrorCode::InvalidRequest,
-                    "bridge credential is unavailable",
-                ),
-            )
-        }
-    };
-    let response = match BridgeRequest::from_json(&input) {
-        Err(error) => response_string(
-            &mut env,
-            error_response(BridgeErrorCode::InvalidRequest, error.to_string()),
-        ),
-        Ok(request) => {
-            if endpoint.trim().is_empty() {
-                response_string(
-                    &mut env,
+    env.with_env(|env| -> Result<jstring, jni::errors::Error> {
+        let input = match request.try_to_string(env) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(response_string(
+                    env,
                     error_response(
-                        BridgeErrorCode::NotLinked,
-                        "bridge endpoint is not configured",
+                        BridgeErrorCode::InvalidRequest,
+                        format!("request string unavailable: ${error}"),
                     ),
-                )
-            } else if credential.trim().is_empty() {
-                response_string(
-                    &mut env,
+                ))
+            }
+        };
+        let endpoint = match endpoint.try_to_string(env) {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(response_string(
+                    env,
                     error_response(
-                        BridgeErrorCode::TransportUnavailable,
+                        BridgeErrorCode::InvalidRequest,
+                        "bridge endpoint is unavailable",
+                    ),
+                ))
+            }
+        };
+        let credential = match credential.try_to_string(env) {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(response_string(
+                    env,
+                    error_response(
+                        BridgeErrorCode::InvalidRequest,
                         "bridge credential is unavailable",
                     ),
-                )
-            } else {
-                response_string_json(
-                    &mut env,
-                    exchange_response_json(&request, &endpoint, &credential),
-                )
+                ))
             }
-        }
-    };
-    response
+        };
+        let response = match BridgeRequest::from_json(&input) {
+            Err(error) => response_string(
+                env,
+                error_response(BridgeErrorCode::InvalidRequest, error.to_string()),
+            ),
+            Ok(request) => {
+                if endpoint.trim().is_empty() {
+                    response_string(
+                        env,
+                        error_response(
+                            BridgeErrorCode::NotLinked,
+                            "bridge endpoint is not configured",
+                        ),
+                    )
+                } else if credential.trim().is_empty() {
+                    response_string(
+                        env,
+                        error_response(
+                            BridgeErrorCode::TransportUnavailable,
+                            "bridge credential is unavailable",
+                        ),
+                    )
+                } else {
+                    response_string_json(
+                        env,
+                        exchange_response_json(&request, &endpoint, &credential),
+                    )
+                }
+            }
+        };
+        Ok(response)
+    })
+    .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
 }
 
 fn exchange_response_json(request: &BridgeRequest, endpoint: &str, credential: &str) -> String {
@@ -402,7 +431,7 @@ fn read_http_response<R: Read>(reader: &mut R) -> Result<HttpResponse, ExchangeE
     Ok(HttpResponse { status, body })
 }
 
-fn response_string(env: &mut JNIEnv, response: BridgeResponse) -> jstring {
+fn response_string(env: &mut Env<'_>, response: BridgeResponse) -> jstring {
     response_string_json(env, error_json(response))
 }
 
@@ -410,11 +439,14 @@ fn error_json(response: BridgeResponse) -> String {
     response.canonical_json().unwrap_or_else(|_| "{\"schema_version\":1,\"checkpoint\":null,\"decisions\":[],\"error\":{\"code\":\"transport_unavailable\",\"message\":\"bridge exchange failed\"}}".to_owned())
 }
 
-fn response_string_json(env: &mut JNIEnv, json: String) -> jstring {
+fn response_string_json(env: &mut Env<'_>, json: String) -> jstring {
     match env.new_string(json) {
         Ok(value) => value.into_raw(),
         Err(error) => {
-            let _ = env.throw_new("java/lang/IllegalStateException", error.to_string());
+            let _ = env.throw_new(
+                jni_str!("java/lang/IllegalStateException"),
+                JNIString::from(error.to_string()),
+            );
             std::ptr::null_mut()
         }
     }
@@ -427,6 +459,11 @@ mod tests {
     #[test]
     fn schema_is_stable() {
         assert_eq!(any_cal_core::BRIDGE_SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn platform_verifier_config_builds_for_secure_exchange() {
+        assert!(platform_client_config().is_ok());
     }
 
     #[test]

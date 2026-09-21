@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 any-cal-core = { path = "../core" }
-jni = "0.21"
+jni = "0.22"
 serde_json.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true

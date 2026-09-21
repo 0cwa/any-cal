@@ -1,11 +1,13 @@
 package org.anycal.android
 
+import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** JNI loader for the versioned Android-to-gateway bridge. */
 object NativeRustBridge {
     private val loadError: Throwable? = runCatching { System.loadLibrary("any_cal_android_bridge") }.exceptionOrNull()
+    @Volatile private var verifierInitialized = false
 
     fun available(): Boolean = loadError == null
 
@@ -15,10 +17,28 @@ object NativeRustBridge {
 
     fun ready(): Boolean = available() && runCatching { negotiate() && health() }.getOrDefault(false)
 
+    /** Binds rustls-platform-verifier to the process JVM and Android trust store. */
+    fun initializeVerifier(context: Context): Boolean {
+        if (!available()) return false
+        if (verifierInitialized) return true
+        return synchronized(this) {
+            if (verifierInitialized) {
+                true
+            } else {
+                runCatching {
+                    nativeInitializeVerifier(context.applicationContext) == 1
+                }.getOrDefault(false).also { verifierInitialized = it }
+            }
+        }
+    }
+
     fun requestJson(request: BridgeRequest, endpoint: String = "", credential: String = ""): String {
         request.validate()
         require(credential.indexOfAny(charArrayOf('\r', '\n', '\u0000')) < 0) {
             "bridge credential contains invalid characters"
+        }
+        check(!endpoint.startsWith("https://", ignoreCase = true) || verifierInitialized) {
+            "native TLS verifier is not initialized"
         }
         return loaded { nativeBridgeJson(request.toJson(), endpoint, credential) }
     }
@@ -29,6 +49,7 @@ object NativeRustBridge {
 
     @JvmStatic private external fun nativeSchemaVersion(): Int
     @JvmStatic private external fun nativeHealth(): Int
+    @JvmStatic private external fun nativeInitializeVerifier(context: Context): Int
     @JvmStatic private external fun nativeBridgeJson(request: String, endpoint: String, credential: String): String
 
     private fun BridgeRequest.toJson(): String = JSONObject().apply {

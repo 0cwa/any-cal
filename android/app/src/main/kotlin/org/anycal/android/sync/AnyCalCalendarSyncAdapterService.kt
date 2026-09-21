@@ -10,6 +10,7 @@ import android.os.Bundle
 import org.anycal.android.calendar.CalendarSyncRunner
 import org.anycal.android.calendar.NativeCalendarBridgeSource
 import org.anycal.android.BridgeRuntimeConfig
+import org.anycal.android.NativeRustBridge
 import org.anycal.android.RustSyncBridgeFactory
 import org.anycal.android.account.ANYCAL_ACCOUNT_GENERATION_KEY
 import org.anycal.android.account.ANYCAL_ACCOUNT_TOKEN_KEY
@@ -21,6 +22,7 @@ class AnyCalCalendarSyncAdapterService : android.app.Service() {
 
     override fun onCreate() {
         super.onCreate()
+        NativeRustBridge.initializeVerifier(this)
         adapter = Adapter(this)
     }
 

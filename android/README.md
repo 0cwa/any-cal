@@ -10,7 +10,9 @@ The bridge sends a bounded `POST /android/sync` request to the configured
 gateway. The request contains the account scope, checkpoint, tombstones, and
 full canonical resource envelopes. The gateway returns decisions plus any
 canonical resources to project. The native transport uses rustls platform
-verification for HTTPS and keeps the AccountManager token in memory only.
+verification for HTTPS after binding the verifier to the Android JVM and
+application trust store; HTTPS fails closed if that initialization is not
+complete. No live trusted HTTPS endpoint is claimed by the current receipts.
 Provider state and checkpoints are committed only after a successful provider
 batch. A missing endpoint, credential, permission, provider, or response
 decision fails the run without treating the source as empty.

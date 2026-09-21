@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.ContactsContract
 import org.anycal.android.BridgeRequest
 import org.anycal.android.BridgeRuntimeConfig
+import org.anycal.android.NativeRustBridge
 import org.anycal.android.RustSyncBridgeFactory
 import org.anycal.android.RustSyncBridge
 import org.anycal.android.account.ANYCAL_ACCOUNT_TOKEN_KEY
@@ -33,6 +34,7 @@ class AnyCalSyncAdapterService : android.app.Service() {
 
     override fun onCreate() {
         super.onCreate()
+        NativeRustBridge.initializeVerifier(this)
         adapter = Adapter(this)
     }
 
