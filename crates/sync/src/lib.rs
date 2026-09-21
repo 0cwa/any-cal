@@ -1,6 +1,6 @@
 //! Durable sync bookkeeping. It records observed identities and pending
 //! operations without assuming a live Anytype change-stream API.
-use any_cal_core::{ResourceEnvelope, ResourceId};
+use any_cal_core::{DomainBinding, ResourceEnvelope, ResourceId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -145,10 +145,47 @@ pub fn classify(
         (Some(_), Some(_)) => Reconciliation::RemoteChanged,
     }
 }
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncScope {
+    pub domain_id: String,
+    pub binding_fingerprint: String,
+    pub endpoint_fingerprint: String,
+    pub account_fingerprint: String,
+    pub space_id: String,
+}
+
+impl SyncScope {
+    pub fn for_binding(
+        binding: &DomainBinding,
+        endpoint: &str,
+        account_fingerprint: &str,
+    ) -> Result<Self, StoreError> {
+        if endpoint.trim().is_empty() || endpoint.chars().any(char::is_control) {
+            return Err(StoreError::Invalid("invalid endpoint identity".into()));
+        }
+        let binding_fingerprint = binding
+            .fingerprint(account_fingerprint)
+            .map_err(|_| StoreError::Invalid("invalid binding identity".into()))?;
+        let scope = Self {
+            domain_id: binding.domain_id.clone(),
+            binding_fingerprint,
+            endpoint_fingerprint: digest(endpoint.as_bytes()),
+            account_fingerprint: account_fingerprint.into(),
+            space_id: binding.space_id.clone(),
+        };
+        validate_scope(&scope)?;
+        Ok(scope)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SyncState {
     pub version: u8,
     pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<SyncScope>,
     pub observed: BTreeMap<ResourceId, ObservedResource>,
     pub pending: BTreeMap<String, PendingOperation>,
     pub tombstones: BTreeMap<ResourceId, Tombstone>,
@@ -183,6 +220,7 @@ impl Default for SyncState {
         Self {
             version: VERSION,
             generation: 0,
+            scope: None,
             observed: BTreeMap::new(),
             pending: BTreeMap::new(),
             tombstones: BTreeMap::new(),
@@ -238,7 +276,21 @@ pub struct SyncStore {
 }
 impl SyncStore {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, StoreError> {
-        let path = path.into();
+        Self::open_with_scope(path.into(), None)
+    }
+
+    pub fn open_scoped(
+        path: impl Into<PathBuf>,
+        scope: SyncScope,
+    ) -> Result<Self, StoreError> {
+        validate_scope(&scope)?;
+        Self::open_with_scope(path.into(), Some(scope))
+    }
+
+    fn open_with_scope(
+        path: PathBuf,
+        expected_scope: Option<SyncScope>,
+    ) -> Result<Self, StoreError> {
         validate_path(&path)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -256,7 +308,7 @@ impl SyncStore {
                 }
             })?;
         set_private_mode(&lock_path)?;
-        let (state, recovered_from_backup) = match read_state(&path) {
+        let (mut state, recovered_from_backup) = match read_state(&path) {
             Ok(s) => (s, false),
             Err(primary) => match read_state(&backup(&path)) {
                 Ok(s) => (s, true),
@@ -278,6 +330,10 @@ impl SyncStore {
             let _ = fs::remove_file(&lock_path);
             return Err(error);
         }
+        if let Err(error) = bind_scope(&mut state, expected_scope) {
+            let _ = fs::remove_file(&lock_path);
+            return Err(error);
+        }
         Ok(Self {
             path,
             state,
@@ -288,6 +344,10 @@ impl SyncStore {
     }
     pub fn state(&self) -> &SyncState {
         &self.state
+    }
+
+    pub fn scope(&self) -> Option<&SyncScope> {
+        self.state.scope.as_ref()
     }
 
     /// Export the current state to a private, atomically published artifact.
@@ -348,6 +408,11 @@ impl SyncStore {
         let export: SyncExport = serde_json::from_slice(&bytes)
             .map_err(|error| StoreError::Corrupt(format!("invalid export: {error}")))?;
         validate_export(&export)?;
+        if self.state.scope != export.payload.scope {
+            return Err(StoreError::Invalid(
+                "sync export binding scope mismatch".into(),
+            ));
+        }
         let encoded = serde_json::to_vec_pretty(&export.payload)
             .map_err(|error| StoreError::Corrupt(error.to_string()))?;
         atomic_write(&self.path, &encoded)?;
@@ -691,12 +756,58 @@ fn read_state(path: &Path) -> io::Result<SyncState> {
     serde_json::from_slice(&fs::read(path)?)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
+fn validate_scope(scope: &SyncScope) -> Result<(), StoreError> {
+    for (name, value) in [
+        ("domain_id", scope.domain_id.as_str()),
+        ("binding_fingerprint", scope.binding_fingerprint.as_str()),
+        ("endpoint_fingerprint", scope.endpoint_fingerprint.as_str()),
+        ("account_fingerprint", scope.account_fingerprint.as_str()),
+        ("space_id", scope.space_id.as_str()),
+    ] {
+        if value.trim().is_empty() || value.chars().any(char::is_control) {
+            return Err(StoreError::Invalid(format!("invalid sync scope {name}")));
+        }
+    }
+    Ok(())
+}
+
+fn bind_scope(
+    state: &mut SyncState,
+    expected_scope: Option<SyncScope>,
+) -> Result<(), StoreError> {
+    match (state.scope.as_ref(), expected_scope) {
+        (Some(_), None) => Err(StoreError::Invalid(
+            "scoped checkpoint requires an expected binding scope".into(),
+        )),
+        (Some(actual), Some(expected)) if actual != &expected => Err(StoreError::Invalid(
+            "sync checkpoint binding scope mismatch".into(),
+        )),
+        (Some(_), Some(_)) | (None, None) => Ok(()),
+        (None, Some(expected)) => {
+            let contains_prior_state = state.generation != 0
+                || !state.observed.is_empty()
+                || !state.pending.is_empty()
+                || !state.tombstones.is_empty();
+            if contains_prior_state {
+                return Err(StoreError::Invalid(
+                    "unscoped checkpoint with existing state cannot adopt a binding".into(),
+                ));
+            }
+            state.scope = Some(expected);
+            Ok(())
+        }
+    }
+}
+
 fn validate(state: &SyncState) -> Result<(), StoreError> {
     if state.version != VERSION {
         return Err(StoreError::Corrupt(format!(
             "unsupported version {}",
             state.version
         )));
+    }
+    if let Some(scope) = &state.scope {
+        validate_scope(scope)?;
     }
     for (id, op) in &state.pending {
         if id != &op.operation_id {
@@ -710,7 +821,8 @@ fn validate(state: &SyncState) -> Result<(), StoreError> {
 mod tests {
     use super::*;
     use any_cal_core::{
-        AnytypeObjectId, CanonicalDocument, CollectionId, DavKind, DavUid, StructuredDocument,
+        AnytypeObjectId, BindingLifecycle, CanonicalDocument, CollectionId, DavKind, DavRoute,
+        DavUid, DomainBinding, StructuredDocument, VisibilityIntent,
     };
     use std::{
         fs,
@@ -752,6 +864,143 @@ mod tests {
             envelope: Some(env()),
             attempts: 0,
         }
+    }
+
+    fn scope(space_id: &str, account: &str, endpoint: &str) -> SyncScope {
+        let binding = DomainBinding {
+            domain_id: "personal-contacts".into(),
+            label: "Personal contacts".into(),
+            space_id: space_id.into(),
+            credential_profile_id: "personal-account".into(),
+            routes: vec![DavRoute::contacts("/dav/contacts/personal")],
+            schema_profile: "default".into(),
+            checkpoint_namespace: "personal-contacts".into(),
+            visibility: VisibilityIntent::Private,
+            lifecycle: BindingLifecycle::Configured,
+        };
+        SyncScope::for_binding(&binding, endpoint, account).unwrap()
+    }
+
+    #[test]
+    fn sync_scope_qualifies_binding_endpoint_account_and_space() {
+        let base = scope("space-a", "account-a", "https://anytype.example.test");
+        assert_eq!(base.domain_id, "personal-contacts");
+        assert_eq!(base.space_id, "space-a");
+        assert_eq!(base.endpoint_fingerprint.len(), 64);
+        assert_eq!(base.binding_fingerprint.len(), 64);
+
+        assert_ne!(
+            base,
+            scope("space-b", "account-a", "https://anytype.example.test")
+        );
+        assert_ne!(
+            base,
+            scope("space-a", "account-b", "https://anytype.example.test")
+        );
+        assert_ne!(
+            base,
+            scope("space-a", "account-a", "https://other.example.test")
+        );
+    }
+
+    #[test]
+    fn scoped_checkpoint_rejects_mismatched_reopen_and_unscoped_bypass() {
+        let p = path();
+        let expected = scope("space-a", "account-a", "https://anytype.example.test");
+        {
+            let mut store = SyncStore::open_scoped(&p, expected.clone()).unwrap();
+            assert_eq!(store.scope(), Some(&expected));
+            store.enqueue(op("bound-op", OperationKind::Update)).unwrap();
+        }
+
+        {
+            let reopened = SyncStore::open_scoped(&p, expected.clone()).unwrap();
+            assert_eq!(reopened.pending().count(), 1);
+        }
+
+        assert!(matches!(
+            SyncStore::open_scoped(
+                &p,
+                scope("space-b", "account-a", "https://anytype.example.test")
+            ),
+            Err(StoreError::Invalid(_))
+        ));
+        assert!(matches!(
+            SyncStore::open_scoped(
+                &p,
+                scope("space-a", "account-b", "https://anytype.example.test")
+            ),
+            Err(StoreError::Invalid(_))
+        ));
+        assert!(matches!(
+            SyncStore::open_scoped(
+                &p,
+                scope("space-a", "account-a", "https://other.example.test")
+            ),
+            Err(StoreError::Invalid(_))
+        ));
+        assert!(matches!(
+            SyncStore::open(&p),
+            Err(StoreError::Invalid(_))
+        ));
+        clean(&p);
+    }
+
+    #[test]
+    fn nonempty_legacy_checkpoint_cannot_silently_adopt_scope() {
+        let p = path();
+        {
+            let mut legacy = SyncStore::open(&p).unwrap();
+            legacy.enqueue(op("legacy-op", OperationKind::Update)).unwrap();
+        }
+
+        assert!(matches!(
+            SyncStore::open_scoped(
+                &p,
+                scope("space-a", "account-a", "https://anytype.example.test")
+            ),
+            Err(StoreError::Invalid(_))
+        ));
+        clean(&p);
+    }
+
+    #[test]
+    fn scoped_restore_rejects_export_from_another_binding() {
+        let destination = path();
+        let source = path().with_extension("source.json");
+        let export = source.with_extension("export");
+
+        let destination_scope =
+            scope("space-a", "account-a", "https://anytype.example.test");
+        let source_scope =
+            scope("space-b", "account-a", "https://anytype.example.test");
+
+        let mut destination_store =
+            SyncStore::open_scoped(&destination, destination_scope.clone()).unwrap();
+        destination_store
+            .enqueue(op("destination-op", OperationKind::Update))
+            .unwrap();
+        let before = destination_store.state().clone();
+
+        {
+            let mut source_store =
+                SyncStore::open_scoped(&source, source_scope).unwrap();
+            source_store
+                .enqueue(op("source-op", OperationKind::Create))
+                .unwrap();
+            source_store.export_to(&export).unwrap();
+        }
+
+        assert!(matches!(
+            destination_store.restore_export(&export),
+            Err(StoreError::Invalid(_))
+        ));
+        assert_eq!(destination_store.state(), &before);
+
+        drop(destination_store);
+        clean(&destination);
+        clean(&source);
+        let _ = fs::remove_file(export);
     }
     #[test]
     fn restart_preserves_pending() {
