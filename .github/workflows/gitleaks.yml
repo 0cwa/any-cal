@@ -2,6 +2,8 @@ name: secret-scan
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
   schedule:
@@ -9,6 +11,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: secret-scan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   gitleaks:

@@ -47,8 +47,8 @@ configured Space before reporting readiness.
 
 ```sh
 env -u LD_PRELOAD cargo fmt --all -- --check
-env -u LD_PRELOAD cargo test --workspace --offline
-env -u LD_PRELOAD cargo clippy --workspace --all-targets --offline -- -D warnings
+env -u LD_PRELOAD cargo test --workspace --offline --locked
+env -u LD_PRELOAD cargo clippy --workspace --all-targets --offline --locked -- -D warnings
 
 mkdir -p ./tmp
 packaging/release.sh --stage ./tmp/any-cal-stage
