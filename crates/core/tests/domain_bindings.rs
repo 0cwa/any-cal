@@ -1,6 +1,6 @@
 use any_cal_core::{
-    BindingLifecycle, DavRoute, DomainBinding, DomainBindings, DomainBindingsError,
-    VisibilityIntent, DOMAIN_BINDINGS_SCHEMA_VERSION,
+    BindingLifecycle, DavComponent, DavRoute, DomainBinding, DomainBindings, DomainBindingsError,
+    DomainCollection, VisibilityIntent, DOMAIN_BINDINGS_SCHEMA_VERSION,
 };
 
 fn binding(
@@ -198,6 +198,23 @@ fn binding_fingerprint_changes_with_space_account_and_profile() {
             .fingerprint("account-fingerprint-a")
             .unwrap()
     );
+
+    let ordered = binding(
+        "combined",
+        "Combined",
+        "space-a",
+        "account-profile-a",
+        vec![
+            DavRoute::contacts("/dav/contacts/personal"),
+            DavRoute::tasks("/dav/tasks/personal"),
+        ],
+    );
+    let mut reversed = ordered.clone();
+    reversed.routes.reverse();
+    assert_eq!(
+        ordered.fingerprint("account-fingerprint-a").unwrap(),
+        reversed.fingerprint("account-fingerprint-a").unwrap()
+    );
 }
 
 #[test]
@@ -205,6 +222,29 @@ fn malformed_or_unsupported_contracts_are_rejected() {
     assert_eq!(
         DomainBindings::from_json("not-json").unwrap_err(),
         DomainBindingsError::InvalidJson
+    );
+    assert_eq!(
+        DomainBindings::from_json(
+            r#"{"version":1,"bindings":[],"unexpected":true}"#
+        )
+        .unwrap_err(),
+        DomainBindingsError::InvalidJson
+    );
+
+    let mismatched = binding(
+        "bad-component",
+        "Bad component",
+        "space-a",
+        "account-a",
+        vec![DavRoute {
+            collection: DomainCollection::Contacts,
+            component: DavComponent::Vtodo,
+            path: "/dav/contacts/bad".into(),
+        }],
+    );
+    assert_eq!(
+        DomainBindings::new(vec![mismatched]).unwrap_err(),
+        DomainBindingsError::ComponentMismatch
     );
 
     let mut contract =
