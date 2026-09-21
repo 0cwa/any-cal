@@ -185,18 +185,13 @@ fn binding_fingerprint_changes_with_space_account_and_profile() {
         moved.fingerprint("account-fingerprint-a").unwrap()
     );
 
-    assert_ne!(
-        original,
-        base.fingerprint("account-fingerprint-b").unwrap()
-    );
+    assert_ne!(original, base.fingerprint("account-fingerprint-b").unwrap());
 
     let mut reprofiled = base.clone();
     reprofiled.credential_profile_id = "account-profile-b".into();
     assert_ne!(
         original,
-        reprofiled
-            .fingerprint("account-fingerprint-a")
-            .unwrap()
+        reprofiled.fingerprint("account-fingerprint-a").unwrap()
     );
 
     let ordered = binding(
@@ -224,10 +219,7 @@ fn malformed_or_unsupported_contracts_are_rejected() {
         DomainBindingsError::InvalidJson
     );
     assert_eq!(
-        DomainBindings::from_json(
-            r#"{"version":1,"bindings":[],"unexpected":true}"#
-        )
-        .unwrap_err(),
+        DomainBindings::from_json(r#"{"version":1,"bindings":[],"unexpected":true}"#).unwrap_err(),
         DomainBindingsError::InvalidJson
     );
 
@@ -247,8 +239,7 @@ fn malformed_or_unsupported_contracts_are_rejected() {
         DomainBindingsError::ComponentMismatch
     );
 
-    let mut contract =
-        DomainBindings::legacy_single_space("space-a", "contacts", "tasks").unwrap();
+    let mut contract = DomainBindings::legacy_single_space("space-a", "contacts", "tasks").unwrap();
     contract.version += 1;
     assert_eq!(
         contract.validate().unwrap_err(),
