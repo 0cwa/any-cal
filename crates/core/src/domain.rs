@@ -210,17 +210,11 @@ impl DomainBinding {
         upstream_account_fingerprint: &str,
     ) -> Result<String, DomainBindingsError> {
         validate_binding(self)?;
-        validate_opaque(
-            upstream_account_fingerprint,
-            "upstream_account_fingerprint",
-        )?;
+        validate_opaque(upstream_account_fingerprint, "upstream_account_fingerprint")?;
 
         let mut hasher = Sha256::new();
         hash_field(&mut hasher, "any-cal-domain-binding");
-        hash_field(
-            &mut hasher,
-            &DOMAIN_BINDINGS_SCHEMA_VERSION.to_string(),
-        );
+        hash_field(&mut hasher, &DOMAIN_BINDINGS_SCHEMA_VERSION.to_string());
         hash_field(&mut hasher, &self.domain_id);
         hash_field(&mut hasher, upstream_account_fingerprint);
         hash_field(&mut hasher, &self.credential_profile_id);
