@@ -476,7 +476,12 @@ fn archive_is_confirmed_and_omitted_from_normal_relist() {
         .list_resources(&e.collection_id, false)
         .unwrap()
         .is_empty());
-    assert!(repo.transport.objects[&e.anytype_object_id.to_string()].archived);
+    assert!(repo
+        .transport
+        .objects
+        .get_in_space("space", e.anytype_object_id.as_str())
+        .unwrap()
+        .archived);
 }
 
 #[test]
