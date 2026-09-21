@@ -28,6 +28,9 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
-    implementation("rustls:rustls-platform-verifier:latest.release")
+    // Match the Android support artifact bundled by rustls-platform-verifier.
+    // Dynamic Maven versions are not reproducible and cannot be resolved from
+    // the Cargo registry's local Maven repository in offline builds.
+    implementation("rustls:rustls-platform-verifier:0.1.1")
     testImplementation("junit:junit:4.13.2")
 }

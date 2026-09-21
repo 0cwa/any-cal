@@ -3,5 +3,12 @@
         <activity
             android:name=".NativeInprocessSmokeActivity"
             android:exported="true" />
+        <receiver
+            android:name=".tasks.TasksOrgProbeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.anycal.android.tasks.PROBE" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

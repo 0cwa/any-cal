@@ -20,7 +20,8 @@ fun rustlsPlatformVerifierMavenRepository(): File {
         .asSequence()
         .mapNotNull { it as? Map<*, *> }
         .first { it["name"] == "rustls-platform-verifier-android" }
-        .getValue("manifest_path") as String
+        .get("manifest_path") as? String
+        ?: error("rustls-platform-verifier-android manifest path is missing")
     return File(File(manifestPath).parentFile, "maven")
 }
 
@@ -37,7 +38,10 @@ dependencyResolutionManagement {
     repositories {
         maven {
             url = uri(rustlsPlatformVerifierMavenRepository())
-            metadataSources { artifact() }
+            metadataSources {
+                mavenPom()
+                artifact()
+            }
         }
         google()
         mavenCentral()
