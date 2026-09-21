@@ -55,6 +55,7 @@ compatibility scaffolding that no user needs yet.
 Use the same locked/offline profile as CI whenever dependencies are already available:
 
 ```sh
+bash scripts/docs/check-structure.sh
 env -u LD_PRELOAD cargo fmt --all -- --check
 env -u LD_PRELOAD cargo test --workspace --offline --locked
 env -u LD_PRELOAD cargo clippy --workspace --all-targets --offline --locked -- -D warnings
