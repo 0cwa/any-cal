@@ -790,12 +790,15 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             Ok(()) | Err(any_cal_core::RepositoryError::CollectionAlreadyExists(_)) => {}
             Err(error) => return Err(ConfigError::Repository(error.to_string())),
         }
-        let sync = config
-            .sync_checkpoint
-            .as_deref()
-            .map(SyncStore::open)
-            .transpose()
-            .map_err(|error| ConfigError::Io(error.to_string()))?;
+        let sync = if let Some(path) = config.sync_checkpoint.as_deref() {
+            let scope = config.sync_scope(transport_mode)?;
+            Some(
+                SyncStore::open_scoped(path, scope)
+                    .map_err(|error| ConfigError::Io(error.to_string()))?,
+            )
+        } else {
+            None
+        };
         let audit = config
             .audit_directory
             .as_deref()
