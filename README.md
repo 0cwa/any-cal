@@ -45,7 +45,18 @@ configured Space before reporting readiness.
 
 ## Build, test, and package
 
+For the normal pre-PR validation profile, use:
+
 ```sh
+bash scripts/validate.sh
+```
+
+Use `--offline` when locked dependencies are already cached, and add `--android`
+when Android/JNI/build changes are in scope. The underlying checks are:
+
+```sh
+bash scripts/docs/check-structure.sh
+scripts/android-probe/validate.sh
 env -u LD_PRELOAD cargo fmt --all -- --check
 env -u LD_PRELOAD cargo test --workspace --offline --locked
 env -u LD_PRELOAD cargo clippy --workspace --all-targets --offline --locked -- -D warnings
