@@ -38,3 +38,31 @@ Normal snapshot refresh rejects a resource ID that is already tombstoned with
 a typed resurrection error. Reuse requires the explicit
 `replace_observed_explicit_resurrection` API, which atomically removes the
 tombstone and publishes the new observed record as a deliberate create.
+
+
+## Binding-scoped checkpoints
+
+For multi-domain routing, `SyncStore::open_scoped` binds an entire checkpoint to a
+non-secret `SyncScope` containing:
+
+- domain ID;
+- domain-binding fingerprint;
+- hashed endpoint identity;
+- upstream account fingerprint;
+- Space ID.
+
+The checkpoint therefore owns its observed set, pending operations, and tombstones as
+one binding-qualified unit. Reopening it with another Space, account, endpoint, or
+binding fingerprint fails closed. The legacy unscoped `SyncStore::open` API refuses
+to open an already-scoped checkpoint, so older call sites cannot silently bypass the
+scope.
+
+An existing **non-empty** unscoped checkpoint cannot silently adopt a scope because its
+prior resources may belong to another binding. Empty state may adopt a scope. Export
+payloads carry the scope inside the integrity-protected state, and in-process restore
+requires an exact scope match before publication.
+
+This API is the persistence seam for the Space-qualified routing work in issue #3.
+The application currently still opens legacy unscoped checkpoints; switching the app
+to `open_scoped` belongs in a separate wiring slice so the runtime can derive the
+scope from the exact resolved domain binding rather than guessing from scalar config.
