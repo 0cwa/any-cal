@@ -134,3 +134,17 @@ jobs:
           path: android/app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
           retention-days: 14
+
+  gate:
+    name: ci-gate
+    if: always()
+    needs: [rust, android]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all CI jobs
+        env:
+          RUST_RESULT: ${{ needs.rust.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+        run: |
+          test "$RUST_RESULT" = "success"
+          test "$ANDROID_RESULT" = "success"
