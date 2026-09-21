@@ -238,3 +238,40 @@ fn local_observation_and_pending_replay_are_idempotent_and_conflict_safe() {
     drop(reopened);
     remove_checkpoint(&checkpoint);
 }
+
+#[test]
+fn app_checkpoint_rejects_space_endpoint_and_token_context_changes() {
+    let checkpoint = temporary_path("scoped-startup");
+    let mut config = AppConfig::defaults();
+    config.space_id = "scope-a".into();
+    config.token = Some("synthetic-token-a".into());
+    config.sync_checkpoint = Some(checkpoint.to_string_lossy().into_owned());
+
+    {
+        let mut app =
+            App::with_transport(config.clone(), FakeAnytypeTransport::new(2)).unwrap();
+        let created = app.handle(request(
+            "PUT",
+            "/carddav/contacts/scoped.vcf",
+            &[("Content-Type", "text/vcard")],
+            b"BEGIN:VCARD\r\nVERSION:4.0\r\nUID:scoped\r\nFN:Scoped\r\nEND:VCARD\r\n",
+        ));
+        assert_eq!(created.status, 201);
+    }
+
+    assert!(App::with_transport(config.clone(), FakeAnytypeTransport::new(2)).is_ok());
+
+    let mut moved = config.clone();
+    moved.space_id = "scope-b".into();
+    assert!(App::with_transport(moved, FakeAnytypeTransport::new(2)).is_err());
+
+    let mut endpoint = config.clone();
+    endpoint.endpoint = "http://127.0.0.1:31013".into();
+    assert!(App::with_transport(endpoint, FakeAnytypeTransport::new(2)).is_err());
+
+    let mut rotated = config;
+    rotated.token = Some("synthetic-token-b".into());
+    assert!(App::with_transport(rotated, FakeAnytypeTransport::new(2)).is_err());
+
+    remove_checkpoint(&checkpoint);
+}
