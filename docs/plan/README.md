@@ -1,5 +1,10 @@
 # Anytype DAV adapter plan
 
+> **Documentation status:** This is a durable architecture document. Start at
+> [../README.md](../README.md) for the project documentation map. Files in this
+> directory ending in `-current.md` are historical evidence snapshots unless a
+> durable document links to them for a specific claim.
+
 ## Purpose
 
 Any-Cal is an always-on CardDAV and CalDAV server whose sole durable data
