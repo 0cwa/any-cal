@@ -2120,7 +2120,6 @@ fn write_http(
     stream.write_all(&response.body)
 }
 
-
 #[cfg(test)]
 mod framing_tests {
     use super::*;
