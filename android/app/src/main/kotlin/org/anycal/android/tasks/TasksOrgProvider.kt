@@ -249,6 +249,9 @@ private fun org.anycal.android.BridgeOccurrence.toTaskDate(): Pair<Long, Boolean
     }.recoverCatching {
         OffsetDateTime.parse(raw).toInstant().toEpochMilli()
     }.recoverCatching {
+        OffsetDateTime.parse(raw, DateTimeFormatter.ofPattern("uuuuMMdd'T'HHmmssX"))
+            .toInstant().toEpochMilli()
+    }.recoverCatching {
         LocalDateTime.parse(raw).atZone(ZoneId.of(params["TZID"]?.firstOrNull() ?: "UTC"))
             .toInstant().toEpochMilli()
     }.getOrElse { error("task date is not parseable") }
