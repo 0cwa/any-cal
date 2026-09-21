@@ -26,8 +26,12 @@ fn object(id: &str, space: &str) -> ObjectRecord {
 #[test]
 fn fake_transport_keeps_identical_object_ids_isolated_by_space() {
     let mut transport = FakeAnytypeTransport::new(10);
-    transport.create_object(object("shared-id", "space-a")).unwrap();
-    transport.create_object(object("shared-id", "space-b")).unwrap();
+    transport
+        .create_object(object("shared-id", "space-a"))
+        .unwrap();
+    transport
+        .create_object(object("shared-id", "space-b"))
+        .unwrap();
 
     assert_eq!(
         transport
@@ -528,12 +532,13 @@ fn archive_is_confirmed_and_omitted_from_normal_relist() {
         .list_resources(&e.collection_id, false)
         .unwrap()
         .is_empty());
-    assert!(repo
-        .transport
-        .objects
-        .get_in_space("space", e.anytype_object_id.as_str())
-        .unwrap()
-        .archived);
+    assert!(
+        repo.transport
+            .objects
+            .get_in_space("space", e.anytype_object_id.as_str())
+            .unwrap()
+            .archived
+    );
 }
 
 #[test]
