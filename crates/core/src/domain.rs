@@ -5,12 +5,14 @@ use std::collections::BTreeSet;
 pub const DOMAIN_BINDINGS_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DomainBindings {
     pub version: u32,
     pub bindings: Vec<DomainBinding>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DomainBinding {
     pub domain_id: String,
     pub label: String,
@@ -24,6 +26,7 @@ pub struct DomainBinding {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DavRoute {
     pub collection: DomainCollection,
     pub component: DavComponent,
@@ -234,7 +237,13 @@ impl DomainBinding {
         }
 
         let digest = hasher.finalize();
-        Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut fingerprint = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            fingerprint.push(HEX[(byte >> 4) as usize] as char);
+            fingerprint.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        Ok(fingerprint)
     }
 }
 
