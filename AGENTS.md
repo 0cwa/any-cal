@@ -52,24 +52,29 @@ compatibility scaffolding that no user needs yet.
 
 ## Golden validation commands
 
-Use the same locked/offline profile as CI whenever dependencies are already available:
+Prefer the unified pre-PR entrypoint:
+
+```sh
+bash scripts/validate.sh
+```
+
+Use `bash scripts/validate.sh --offline` when locked dependencies are already cached,
+and `bash scripts/validate.sh --android` when Android/JNI/build changes are in scope.
+
+The script mirrors these repository checks:
 
 ```sh
 bash scripts/docs/check-structure.sh
+scripts/android-probe/validate.sh
 env -u LD_PRELOAD cargo fmt --all -- --check
 env -u LD_PRELOAD cargo test --workspace --offline --locked
 env -u LD_PRELOAD cargo clippy --workspace --all-targets --offline --locked -- -D warnings
 env -u LD_PRELOAD scripts/test-packaging.sh
 ```
 
-Android validation is more expensive and should be run when Android/JNI/build changes
-are in scope:
-
-```sh
-env -u LD_PRELOAD scripts/android-build/build-and-test.sh
-```
-
-For the standalone Anytype probe, run Cargo from `tools/anytype-probe`.
+The full Android build remains more expensive and is only included by the
+`--android` option. For the standalone Anytype probe, run Cargo from
+`tools/anytype-probe`.
 
 ## Change discipline
 
