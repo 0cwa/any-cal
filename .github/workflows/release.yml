@@ -13,7 +13,78 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-source:
+    name: validate-source-${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+          - name: macos-arm64
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TERM_COLOR: always
+      TMPDIR: ${{ github.workspace }}/tmp
+      ANY_CAL_TMP_ROOT: ${{ github.workspace }}/tmp
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare repository-local temporary tree
+        run: mkdir -p "$TMPDIR"
+
+      - name: Restore Cargo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-validate-${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Fetch locked dependencies
+        run: env -u LD_PRELOAD cargo fetch --locked
+
+      - name: Check formatting
+        run: env -u LD_PRELOAD cargo fmt --all -- --check
+
+      - name: Run workspace tests
+        run: env -u LD_PRELOAD cargo test --workspace --offline --locked
+
+      - name: Run Clippy
+        run: env -u LD_PRELOAD cargo clippy --workspace --all-targets --offline --locked -- -D warnings
+
+      - name: Exercise user-local packaging
+        run: env -u LD_PRELOAD scripts/test-packaging.sh
+
+  validate-secrets:
+    name: validate-secrets
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out full tagged history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Reject tracked private and generated paths
+        run: scripts/security/check-public-tree.sh
+
+      - name: Scan repository history and tagged working tree
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_CONFIG: gitleaks.toml
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+          GITLEAKS_ENABLE_SUMMARY: "false"
+
   desktop:
+    needs: [validate-source, validate-secrets]
     name: desktop-${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -63,6 +134,7 @@ jobs:
           retention-days: 14
 
   android:
+    needs: [validate-source, validate-secrets]
     name: android-api35
     runs-on: ubuntu-24.04
     env:
@@ -79,6 +151,9 @@ jobs:
 
       - name: Prepare repository-local temporary tree
         run: mkdir -p "$TMPDIR"
+
+      - name: Validate offline Android probe
+        run: scripts/android-probe/validate.sh
 
       - name: Set up JDK 17
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
