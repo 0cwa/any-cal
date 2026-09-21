@@ -263,11 +263,7 @@ impl FakeObjectStore {
         self.objects.values()
     }
 
-    pub fn remove_in_space(
-        &mut self,
-        space_id: &str,
-        object_id: &str,
-    ) -> Option<ObjectRecord> {
+    pub fn remove_in_space(&mut self, space_id: &str, object_id: &str) -> Option<ObjectRecord> {
         self.objects
             .remove(&(space_id.to_owned(), object_id.to_owned()))
     }
