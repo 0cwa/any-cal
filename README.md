@@ -72,8 +72,8 @@ platform-native installers, signing/notarization, and Windows builds remain
 deferred. These require deployment authority, target fixtures, or additional
 interoperability evidence.
 
-The detailed mapping and architecture record is in
-[docs/plan/README.md](docs/plan/README.md).
+Developer and architecture documentation starts at
+[docs/README.md](docs/README.md).
 
 ## Android client profile
 

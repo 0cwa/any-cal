@@ -44,14 +44,18 @@ compatibility scaffolding that no user needs yet.
 - `packaging`: release staging and user-local install/uninstall scripts.
 - `tools/anytype-probe`: standalone Rust workspace for probing Anytype CLI/API
   behavior. It intentionally has its own `Cargo.lock`.
-- `docs/plan`: architecture/research plus execution evidence. Treat `*-current.md`
-  files as evidence snapshots, not the canonical place to add new design policy.
+- `docs/README.md`: canonical documentation entrypoint and retention rules.
+- `docs/plan`: architecture/research plus legacy execution evidence. Treat
+  `*-current.md` files as evidence snapshots, not the canonical place to add new
+  design policy.
+- `docs/evidence`: durable validation receipts that remain useful beyond a PR/CI run.
 
 ## Golden validation commands
 
 Use the same locked/offline profile as CI whenever dependencies are already available:
 
 ```sh
+bash scripts/docs/check-structure.sh
 env -u LD_PRELOAD cargo fmt --all -- --check
 env -u LD_PRELOAD cargo test --workspace --offline --locked
 env -u LD_PRELOAD cargo clippy --workspace --all-targets --offline --locked -- -D warnings
