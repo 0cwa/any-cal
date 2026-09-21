@@ -44,8 +44,11 @@ compatibility scaffolding that no user needs yet.
 - `packaging`: release staging and user-local install/uninstall scripts.
 - `tools/anytype-probe`: standalone Rust workspace for probing Anytype CLI/API
   behavior. It intentionally has its own `Cargo.lock`.
-- `docs/plan`: architecture/research plus execution evidence. Treat `*-current.md`
-  files as evidence snapshots, not the canonical place to add new design policy.
+- `docs/README.md`: canonical documentation entrypoint and retention rules.
+- `docs/plan`: architecture/research plus legacy execution evidence. Treat
+  `*-current.md` files as evidence snapshots, not the canonical place to add new
+  design policy.
+- `docs/evidence`: durable validation receipts that remain useful beyond a PR/CI run.
 
 ## Golden validation commands
 
