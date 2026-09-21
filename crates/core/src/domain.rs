@@ -311,7 +311,8 @@ fn validate_route(route: &DavRoute) -> Result<(), DomainBindingsError> {
             .path
             .chars()
             .any(|character| character.is_control() || character.is_whitespace())
-        || route.path.contains(['?', '#'])
+        || route.path.contains('?')
+        || route.path.contains('#')
     {
         return Err(DomainBindingsError::InvalidRoute);
     }
