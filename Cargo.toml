@@ -1,5 +1,14 @@
 [workspace]
-members = ["crates/core", "crates/dav-server", "crates/anytype-adapter", "crates/app", "crates/ui", "crates/observability", "crates/sync", "crates/android-bridge"]
+members = [
+    "crates/core",
+    "crates/dav-server",
+    "crates/anytype-adapter",
+    "crates/app",
+    "crates/ui",
+    "crates/observability",
+    "crates/sync",
+    "crates/android-bridge",
+]
 resolver = "2"
 
 [workspace.package]
