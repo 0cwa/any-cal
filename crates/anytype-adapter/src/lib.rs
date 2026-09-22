@@ -1063,8 +1063,7 @@ impl RepositoryBinding {
     }
 
     fn accepts(&self, object: &ObjectRecord, expected_id: Option<&str>) -> bool {
-        object.space_id == self.space_id
-            && expected_id.is_none_or(|expected| object.id == expected)
+        object.space_id == self.space_id && expected_id.is_none_or(|expected| object.id == expected)
     }
 }
 
