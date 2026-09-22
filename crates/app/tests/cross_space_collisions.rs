@@ -1,5 +1,6 @@
 use any_cal_anytype_adapter::{AmbiguousMutation, FakeAnytypeTransport};
 use any_cal_app::{App, AppConfig};
+use any_cal_core::{Repository, ResourceId, WriteCondition};
 use any_cal_dav_server::{Request, Response};
 
 fn multi_domain_config() -> AppConfig {
@@ -136,6 +137,28 @@ fn same_contact_identity_and_ambiguous_create_remain_space_qualified() {
     assert!(String::from_utf8(shared.body)
         .unwrap()
         .contains("FN:Shared Bob"));
+
+    let personal_list = app.handle(request(
+        "REPORT",
+        "/carddav/personal",
+        None,
+        b"<addressbook-query><prop><getetag/></prop></addressbook-query>",
+    ));
+    assert_eq!(personal_list.status, 207);
+    let personal_list = String::from_utf8(personal_list.body).unwrap();
+    assert!(personal_list.contains("/carddav/personal/same-contact.vcf"));
+    assert!(!personal_list.contains("/carddav/shared/"));
+
+    let shared_list = app.handle(request(
+        "REPORT",
+        "/carddav/shared",
+        None,
+        b"<addressbook-query><prop><getetag/></prop></addressbook-query>",
+    ));
+    assert_eq!(shared_list.status, 207);
+    let shared_list = String::from_utf8(shared_list.body).unwrap();
+    assert!(shared_list.contains("/carddav/shared/same-contact.vcf"));
+    assert!(!shared_list.contains("/carddav/personal/"));
 }
 
 #[test]
@@ -240,5 +263,57 @@ fn missing_resource_in_other_space_and_unknown_routes_do_not_mutate_active_bindi
         get(&mut app, "/caldav/not-configured/same-task.ics").status,
         404
     );
+    assert_eq!(get(&mut app, "/carddav/personal/same-contact.vcf").status, 200);
+}
+
+
+#[test]
+fn hard_delete_after_route_selection_remains_in_selected_space() {
+    let mut app =
+        App::with_transport(multi_domain_config(), FakeAnytypeTransport::new(100)).unwrap();
+
+    assert_eq!(
+        app.handle(contact(
+            "/carddav/personal/same-contact.vcf",
+            "Personal survives"
+        ))
+        .status,
+        201
+    );
+    assert_eq!(
+        app.handle(contact(
+            "/carddav/shared/same-contact.vcf",
+            "Shared is deleted"
+        ))
+        .status,
+        201
+    );
+
+    // Select the shared binding through the public route before exercising the
+    // repository's hard-delete operation. The binding-scoped repository must
+    // remove only the object in space-b even though space-a has the same ID.
+    assert_eq!(get(&mut app, "/carddav/shared/same-contact.vcf").status, 200);
+    app.server
+        .repository
+        .delete_resource(
+            &ResourceId::try_from("same-contact").unwrap(),
+            WriteCondition::Unconditional,
+        )
+        .unwrap();
+
+    assert!(app
+        .server
+        .repository
+        .transport
+        .objects
+        .get_in_space("space-b", "same-contact")
+        .is_none());
+    assert!(app
+        .server
+        .repository
+        .transport
+        .objects
+        .get_in_space("space-a", "same-contact")
+        .is_some());
     assert_eq!(get(&mut app, "/carddav/personal/same-contact.vcf").status, 200);
 }
