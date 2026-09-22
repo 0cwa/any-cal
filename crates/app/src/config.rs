@@ -274,11 +274,8 @@ impl AppConfig {
         transport_mode: &str,
     ) -> Result<RepositoryBinding, ConfigError> {
         self.validate_transport_identity(transport_mode)?;
-        RepositoryBinding::from_domain(
-            binding,
-            &self.account_context_fingerprint(transport_mode),
-        )
-        .map_err(|_| ConfigError::Invalid("invalid repository binding scope".into()))
+        RepositoryBinding::from_domain(binding, &self.account_context_fingerprint(transport_mode))
+            .map_err(|_| ConfigError::Invalid("invalid repository binding scope".into()))
     }
 
     fn validate_transport_identity(&self, transport_mode: &str) -> Result<(), ConfigError> {
@@ -479,9 +476,8 @@ pub fn parse_cli(
             "--endpoint" => config.endpoint = it.next().ok_or(ConfigError::Missing("endpoint"))?,
             "--space-id" => config.space_id = it.next().ok_or(ConfigError::Missing("space_id"))?,
             "--domain-bindings-json" => {
-                config.domain_bindings_json = Some(
-                    it.next().ok_or(ConfigError::Missing("domain_bindings"))?,
-                )
+                config.domain_bindings_json =
+                    Some(it.next().ok_or(ConfigError::Missing("domain_bindings"))?)
             }
             "--credential-profile-id" => {
                 config.credential_profile_id = it
