@@ -297,5 +297,4 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             let _ = audit.append(event);
         }
     }
-
 }
