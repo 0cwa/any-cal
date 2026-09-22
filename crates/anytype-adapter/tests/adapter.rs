@@ -1,9 +1,10 @@
 use any_cal_anytype_adapter::{
     projected_anytype_properties, AmbiguousMutation, AnytypeRepository, AnytypeTransport,
-    ConflictPolicy, FakeAnytypeTransport, ObjectLocks, ObjectRecord, TransportError,
+    ConflictPolicy, FakeAnytypeTransport, ObjectLocks, ObjectRecord, RepositoryBinding,
+    TransportError,
 };
 use any_cal_core::{
-    AnytypeObjectId, CanonicalDocument, CollectionId, DavKind, DavUid, Repository,
+    AnytypeObjectId, CanonicalDocument, CollectionId, DavKind, DavUid, DomainBindings, Repository,
     ResourceEnvelope, ResourceId, StructuredDocument,
 };
 use std::collections::BTreeMap;
@@ -23,6 +24,124 @@ fn object(id: &str, space: &str) -> ObjectRecord {
     }
 }
 
+
+fn repository_binding(space_id: &str, account_fingerprint: &str) -> RepositoryBinding {
+    let bindings = DomainBindings::legacy_single_space(space_id, "contacts", "tasks").unwrap();
+    RepositoryBinding::from_domain(&bindings.bindings[0], account_fingerprint).unwrap()
+}
+
+#[derive(Clone, Debug)]
+struct WrongSpaceTransport {
+    object: ObjectRecord,
+}
+
+impl AnytypeTransport for WrongSpaceTransport {
+    fn list_objects(
+        &mut self,
+        _space_id: &str,
+        _cursor: Option<&str>,
+    ) -> Result<any_cal_anytype_adapter::Page<ObjectRecord>, TransportError> {
+        Ok(any_cal_anytype_adapter::Page {
+            data: vec![self.object.clone()],
+            next_offset: None,
+        })
+    }
+
+    fn get_object(
+        &mut self,
+        _space_id: &str,
+        _object_id: &str,
+    ) -> Result<ObjectRecord, TransportError> {
+        Ok(self.object.clone())
+    }
+
+    fn create_object(
+        &mut self,
+        _object: ObjectRecord,
+    ) -> Result<ObjectRecord, TransportError> {
+        Ok(self.object.clone())
+    }
+
+    fn update_object(
+        &mut self,
+        _object: ObjectRecord,
+    ) -> Result<ObjectRecord, TransportError> {
+        Ok(self.object.clone())
+    }
+
+    fn archive_object(
+        &mut self,
+        _space_id: &str,
+        _object_id: &str,
+    ) -> Result<ObjectRecord, TransportError> {
+        Ok(self.object.clone())
+    }
+
+    fn delete_object(
+        &mut self,
+        _space_id: &str,
+        _object_id: &str,
+    ) -> Result<ObjectRecord, TransportError> {
+        Ok(self.object.clone())
+    }
+}
+
+
+#[test]
+fn binding_scoped_repository_rejects_wrong_space_transport_responses() {
+    let wrong = object("wrong-space-object", "space-b");
+    let transport = WrongSpaceTransport {
+        object: wrong.clone(),
+    };
+    let mut repo = AnytypeRepository::with_binding(
+        transport,
+        repository_binding("space-a", "account-a"),
+    );
+
+    assert!(matches!(
+        repo.list_collections(),
+        Err(any_cal_core::RepositoryError::MalformedState)
+    ));
+
+    let transport = WrongSpaceTransport { object: wrong };
+    let mut repo = AnytypeRepository::with_binding(
+        transport,
+        repository_binding("space-a", "account-a"),
+    );
+    assert!(matches!(
+        repo.create_resource(
+            envelope("contacts", "cross-space-create", DavKind::Contact),
+            any_cal_core::WriteCondition::Unconditional,
+        ),
+        Err(any_cal_core::RepositoryError::MalformedState)
+    ));
+}
+
+#[test]
+fn operation_identity_changes_with_repository_binding() {
+    let input = envelope("contacts", "same-object", DavKind::Contact);
+
+    let mut left = AnytypeRepository::with_binding(
+        FakeAnytypeTransport::new(10),
+        repository_binding("space-a", "account-a"),
+    );
+    let mut right = AnytypeRepository::with_binding(
+        FakeAnytypeTransport::new(10),
+        repository_binding("space-b", "account-a"),
+    );
+
+    left.create_resource(
+        input.clone(),
+        any_cal_core::WriteCondition::Unconditional,
+    )
+    .unwrap();
+    right
+        .create_resource(input, any_cal_core::WriteCondition::Unconditional)
+        .unwrap();
+
+    assert_ne!(left.binding.binding_fingerprint, right.binding.binding_fingerprint);
+    assert_ne!(left.receipts[0].operation_id, right.receipts[0].operation_id);
+}
 
 #[test]
 fn fake_transport_keeps_identical_object_ids_isolated_by_space() {
