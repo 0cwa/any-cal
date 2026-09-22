@@ -273,4 +273,3 @@ fn app_checkpoint_rejects_space_endpoint_and_token_context_changes() {
 
     remove_checkpoint(&checkpoint);
 }
-
