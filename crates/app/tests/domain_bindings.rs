@@ -23,7 +23,6 @@ fn scalar_app_config_projects_to_one_legacy_domain_binding() {
         ]
     );
 }
-
 #[test]
 fn invalid_scalar_config_does_not_produce_domain_bindings() {
     let config = AppConfig::defaults();
