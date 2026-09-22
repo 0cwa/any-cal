@@ -1,5 +1,5 @@
 use any_cal_anytype_adapter::RepositoryBinding;
-use any_cal_core::{CollectionId, DomainBinding, DomainBindings};
+use any_cal_core::{CollectionId, DavRoute, DomainBinding, DomainBindings, DomainCollection};
 use any_cal_sync::SyncScope;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -13,6 +13,14 @@ pub struct AppConfig {
     pub space_id: String,
     pub contacts_collection: String,
     pub tasks_collection: String,
+    /// Versioned explicit domain-to-Space bindings. When configured, these are
+    /// the only source of truth for DAV routing; scalar Space/collection fields
+    /// are retained solely for legacy single-domain compatibility.
+    pub domain_bindings_json: Option<String>,
+    /// Credential profile backed by the currently configured upstream token.
+    /// Explicit bindings must reference this profile until multi-account
+    /// credential storage is introduced.
+    pub credential_profile_id: String,
     pub listen_address: String,
     pub token: Option<String>,
     /// Runtime-only credential accepted for local health/status checks.
@@ -54,6 +62,8 @@ impl AppConfig {
             space_id: String::new(),
             contacts_collection: "contacts".into(),
             tasks_collection: "tasks".into(),
+            domain_bindings_json: None,
+            credential_profile_id: "legacy-default".into(),
             listen_address: "127.0.0.1:8080".into(),
             token: None,
             local_auth_credential: None,
@@ -96,6 +106,8 @@ impl AppConfig {
             "space_id" => self.space_id = value.into(),
             "contacts_collection" => self.contacts_collection = value.into(),
             "tasks_collection" => self.tasks_collection = value.into(),
+            "domain_bindings" => self.domain_bindings_json = Some(value.into()),
+            "credential_profile_id" => self.credential_profile_id = value.into(),
             "listen_address" => self.listen_address = value.into(),
             "token" => self.token = Some(value.into()),
             "transport_mode" => self.transport_mode = value.into(),
@@ -144,6 +156,8 @@ impl AppConfig {
                 "ANY_CAL_SPACE_ID" => Some("space_id"),
                 "ANY_CAL_CONTACTS_COLLECTION" => Some("contacts_collection"),
                 "ANY_CAL_TASKS_COLLECTION" => Some("tasks_collection"),
+                "ANY_CAL_DOMAIN_BINDINGS_JSON" => Some("domain_bindings"),
+                "ANY_CAL_CREDENTIAL_PROFILE_ID" => Some("credential_profile_id"),
                 "ANY_CAL_LISTEN_ADDRESS" => Some("listen_address"),
                 "ANY_CAL_ANYTYPE_TOKEN" => Some("token"),
                 "ANY_CAL_TRANSPORT_MODE" => Some("transport_mode"),
@@ -167,50 +181,114 @@ impl AppConfig {
         Ok(())
     }
     pub fn domain_bindings(&self) -> Result<DomainBindings, ConfigError> {
-        self.validate()?;
-        DomainBindings::legacy_single_space(
-            self.space_id.clone(),
-            &self.contacts_collection,
-            &self.tasks_collection,
-        )
-        .map_err(|_| ConfigError::Invalid("invalid domain binding configuration".into()))
+        let bindings = self.configured_domain_bindings()?;
+        self.validate_runtime_bindings(&bindings)?;
+        Ok(bindings)
+    }
+
+    fn configured_domain_bindings(&self) -> Result<DomainBindings, ConfigError> {
+        if let Some(input) = self.domain_bindings_json.as_deref() {
+            DomainBindings::from_json(input)
+                .map_err(|_| ConfigError::Invalid("invalid domain binding configuration".into()))
+        } else {
+            DomainBindings::legacy_single_space(
+                self.space_id.clone(),
+                &self.contacts_collection,
+                &self.tasks_collection,
+            )
+            .map_err(|_| ConfigError::Invalid("invalid domain binding configuration".into()))
+        }
+    }
+
+    fn validate_runtime_bindings(&self, bindings: &DomainBindings) -> Result<(), ConfigError> {
+        if self.credential_profile_id.trim().is_empty()
+            || self.credential_profile_id.chars().any(char::is_control)
+        {
+            return Err(ConfigError::Invalid(
+                "credential_profile_id must be a non-empty identifier".into(),
+            ));
+        }
+        for binding in &bindings.bindings {
+            if binding.credential_profile_id != self.credential_profile_id {
+                return Err(ConfigError::Invalid(
+                    "domain binding references an unavailable credential profile".into(),
+                ));
+            }
+            let mut contacts = false;
+            let mut tasks = false;
+            for route in &binding.routes {
+                match route.collection {
+                    DomainCollection::Contacts => {
+                        if contacts {
+                            return Err(ConfigError::Invalid(
+                                "a domain binding may expose at most one contacts route".into(),
+                            ));
+                        }
+                        contacts = true;
+                        route_collection_id(route, "/carddav/")?;
+                    }
+                    DomainCollection::Tasks => {
+                        if tasks {
+                            return Err(ConfigError::Invalid(
+                                "a domain binding may expose at most one tasks route".into(),
+                            ));
+                        }
+                        tasks = true;
+                        route_collection_id(route, "/caldav/")?;
+                    }
+                    DomainCollection::Events => {
+                        return Err(ConfigError::Invalid(
+                            "event routes are not supported by the current DAV runtime".into(),
+                        ))
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn sync_scope(&self, transport_mode: &str) -> Result<SyncScope, ConfigError> {
-        let (binding, account_fingerprint) = self.binding_context(transport_mode)?;
-        SyncScope::for_binding(&binding, &self.endpoint, &account_fingerprint)
-            .map_err(|_| ConfigError::Invalid("invalid sync binding scope".into()))
-    }
-
-    pub(crate) fn repository_binding(
-        &self,
-        transport_mode: &str,
-    ) -> Result<RepositoryBinding, ConfigError> {
-        let (binding, account_fingerprint) = self.binding_context(transport_mode)?;
-        RepositoryBinding::from_domain(&binding, &account_fingerprint)
-            .map_err(|_| ConfigError::Invalid("invalid repository binding scope".into()))
-    }
-
-    fn binding_context(
-        &self,
-        transport_mode: &str,
-    ) -> Result<(DomainBinding, String), ConfigError> {
-        if transport_mode.trim().is_empty() || transport_mode.chars().any(char::is_control) {
-            return Err(ConfigError::Invalid("invalid transport identity".into()));
-        }
         let bindings = self.domain_bindings()?;
         let [binding] = bindings.bindings.as_slice() else {
             return Err(ConfigError::Invalid(
-                "runtime requires exactly one domain binding".into(),
+                "sync scope requires a specific domain binding".into(),
             ));
         };
-        Ok((
-            binding.clone(),
-            self.account_context_fingerprint(transport_mode),
-        ))
+        self.sync_scope_for(binding, transport_mode)
     }
 
-    fn account_context_fingerprint(&self, transport_mode: &str) -> String {
+    pub(crate) fn sync_scope_for(
+        &self,
+        binding: &DomainBinding,
+        transport_mode: &str,
+    ) -> Result<SyncScope, ConfigError> {
+        self.validate_transport_identity(transport_mode)?;
+        let account_fingerprint = self.account_context_fingerprint(transport_mode);
+        SyncScope::for_binding(binding, &self.endpoint, &account_fingerprint)
+            .map_err(|_| ConfigError::Invalid("invalid sync binding scope".into()))
+    }
+
+    pub(crate) fn repository_binding_for(
+        &self,
+        binding: &DomainBinding,
+        transport_mode: &str,
+    ) -> Result<RepositoryBinding, ConfigError> {
+        self.validate_transport_identity(transport_mode)?;
+        RepositoryBinding::from_domain(
+            binding,
+            &self.account_context_fingerprint(transport_mode),
+        )
+        .map_err(|_| ConfigError::Invalid("invalid repository binding scope".into()))
+    }
+
+    fn validate_transport_identity(&self, transport_mode: &str) -> Result<(), ConfigError> {
+        if transport_mode.trim().is_empty() || transport_mode.chars().any(char::is_control) {
+            return Err(ConfigError::Invalid("invalid transport identity".into()));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn account_context_fingerprint(&self, transport_mode: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(b"any-cal-upstream-account-context-v1");
         hasher.update(b"\0endpoint\0");
@@ -273,7 +351,7 @@ impl AppConfig {
         if self.api_version != any_cal_anytype_adapter::API_VERSION {
             return Err(ConfigError::Invalid("unsupported api_version".into()));
         }
-        if self.space_id.trim().is_empty() {
+        if self.domain_bindings_json.is_none() && self.space_id.trim().is_empty() {
             return Err(ConfigError::Missing("space_id"));
         }
         if self.listen_address.trim().is_empty() {
@@ -336,18 +414,43 @@ impl AppConfig {
                 "audit_directory must not be empty".into(),
             ));
         }
-        if self.contacts_collection.trim().is_empty() {
-            return Err(ConfigError::Missing("contacts_collection"));
+        if self.domain_bindings_json.is_none() {
+            if self.contacts_collection.trim().is_empty() {
+                return Err(ConfigError::Missing("contacts_collection"));
+            }
+            if self.tasks_collection.trim().is_empty() {
+                return Err(ConfigError::Missing("tasks_collection"));
+            }
+            CollectionId::try_from(self.contacts_collection.as_str())
+                .map_err(|_| ConfigError::Invalid("invalid contacts_collection".into()))?;
+            CollectionId::try_from(self.tasks_collection.as_str())
+                .map_err(|_| ConfigError::Invalid("invalid tasks_collection".into()))?;
         }
-        if self.tasks_collection.trim().is_empty() {
-            return Err(ConfigError::Missing("tasks_collection"));
+        let bindings = self.configured_domain_bindings()?;
+        self.validate_runtime_bindings(&bindings)?;
+        if bindings.bindings.len() > 1 && self.sync_checkpoint.is_some() {
+            return Err(ConfigError::Invalid(
+                "multi-domain sync checkpoints are not yet supported".into(),
+            ));
         }
-        CollectionId::try_from(self.contacts_collection.as_str())
-            .map_err(|_| ConfigError::Invalid("invalid contacts_collection".into()))?;
-        CollectionId::try_from(self.tasks_collection.as_str())
-            .map_err(|_| ConfigError::Invalid("invalid tasks_collection".into()))?;
         Ok(())
     }
+}
+
+fn route_collection_id(route: &DavRoute, prefix: &str) -> Result<CollectionId, ConfigError> {
+    let Some(collection) = route.path.strip_prefix(prefix) else {
+        return Err(ConfigError::Invalid(
+            "DAV routes must use the current /carddav/<collection> or /caldav/<collection> shape"
+                .into(),
+        ));
+    };
+    if collection.is_empty() || collection.contains('/') {
+        return Err(ConfigError::Invalid(
+            "DAV route must identify exactly one collection segment".into(),
+        ));
+    }
+    CollectionId::try_from(collection)
+        .map_err(|_| ConfigError::Invalid("DAV route contains an invalid collection id".into()))
 }
 
 fn parse_bool(value: &str) -> Result<bool, ConfigError> {
@@ -375,6 +478,16 @@ pub fn parse_cli(
             }
             "--endpoint" => config.endpoint = it.next().ok_or(ConfigError::Missing("endpoint"))?,
             "--space-id" => config.space_id = it.next().ok_or(ConfigError::Missing("space_id"))?,
+            "--domain-bindings-json" => {
+                config.domain_bindings_json = Some(
+                    it.next().ok_or(ConfigError::Missing("domain_bindings"))?,
+                )
+            }
+            "--credential-profile-id" => {
+                config.credential_profile_id = it
+                    .next()
+                    .ok_or(ConfigError::Missing("credential_profile_id"))?
+            }
             "--listen" => {
                 config.listen_address = it.next().ok_or(ConfigError::Missing("listen_address"))?
             }
