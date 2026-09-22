@@ -48,9 +48,16 @@ fn sync_scope_is_non_secret_and_changes_with_upstream_context() {
 
     let mut endpoint = config.clone();
     endpoint.endpoint = "http://127.0.0.1:31013".into();
-    assert_ne!(base, endpoint.sync_scope("custom").unwrap());
+    let endpoint_scope = endpoint.sync_scope("custom").unwrap();
+    assert_ne!(base, endpoint_scope);
+    assert_ne!(base.endpoint_fingerprint, endpoint_scope.endpoint_fingerprint);
+    assert_ne!(base.account_fingerprint, endpoint_scope.account_fingerprint);
+    assert_ne!(base.binding_fingerprint, endpoint_scope.binding_fingerprint);
 
     let mut rotated = config;
     rotated.token = Some("synthetic-token-b".into());
-    assert_ne!(base, rotated.sync_scope("custom").unwrap());
+    let rotated_scope = rotated.sync_scope("custom").unwrap();
+    assert_ne!(base, rotated_scope);
+    assert_ne!(base.account_fingerprint, rotated_scope.account_fingerprint);
+    assert_ne!(base.binding_fingerprint, rotated_scope.binding_fingerprint);
 }
