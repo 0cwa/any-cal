@@ -205,8 +205,73 @@ pub enum TransportError {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct FakeObjectStore {
+    objects: BTreeMap<(String, String), ObjectRecord>,
+}
+
+impl FakeObjectStore {
+    pub fn insert(
+        &mut self,
+        legacy_object_id: String,
+        object: ObjectRecord,
+    ) -> Option<ObjectRecord> {
+        assert_eq!(
+            legacy_object_id, object.id,
+            "fake object map key must match ObjectRecord.id"
+        );
+        self.insert_object(object)
+    }
+
+    pub fn insert_object(&mut self, object: ObjectRecord) -> Option<ObjectRecord> {
+        let key = (object.space_id.clone(), object.id.clone());
+        self.objects.insert(key, object)
+    }
+
+    pub fn get(&self, object_id: &str) -> Option<&ObjectRecord> {
+        let mut matching = self
+            .objects
+            .values()
+            .filter(|object| object.id == object_id);
+        let first = matching.next()?;
+        matching.next().is_none().then_some(first)
+    }
+
+    pub fn get_in_space(&self, space_id: &str, object_id: &str) -> Option<&ObjectRecord> {
+        self.objects
+            .get(&(space_id.to_owned(), object_id.to_owned()))
+    }
+
+    pub fn get_mut_in_space(
+        &mut self,
+        space_id: &str,
+        object_id: &str,
+    ) -> Option<&mut ObjectRecord> {
+        self.objects
+            .get_mut(&(space_id.to_owned(), object_id.to_owned()))
+    }
+
+    pub fn contains_key(&self, object_id: &str) -> bool {
+        self.get(object_id).is_some()
+    }
+
+    pub fn contains_in_space(&self, space_id: &str, object_id: &str) -> bool {
+        self.objects
+            .contains_key(&(space_id.to_owned(), object_id.to_owned()))
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &ObjectRecord> {
+        self.objects.values()
+    }
+
+    pub fn remove_in_space(&mut self, space_id: &str, object_id: &str) -> Option<ObjectRecord> {
+        self.objects
+            .remove(&(space_id.to_owned(), object_id.to_owned()))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct FakeAnytypeTransport {
-    pub objects: BTreeMap<String, ObjectRecord>,
+    pub objects: FakeObjectStore,
     pub page_size: usize,
     pub failure: Option<TransportError>,
     pub delayed: bool,
@@ -299,18 +364,17 @@ impl AnytypeTransport for FakeAnytypeTransport {
             return Err(TransportError::DelayedVisibility);
         }
         self.objects
-            .get(object_id)
-            .filter(|o| o.space_id == space_id)
+            .get_in_space(space_id, object_id)
             .cloned()
             .ok_or(TransportError::NotFound)
     }
     fn create_object(&mut self, object: ObjectRecord) -> Result<ObjectRecord, TransportError> {
         self.create_calls += 1;
         self.take()?;
-        if self.objects.contains_key(&object.id) {
+        if self.objects.contains_in_space(&object.space_id, &object.id) {
             return Err(TransportError::Conflict);
         }
-        self.objects.insert(object.id.clone(), object.clone());
+        self.objects.insert_object(object.clone());
         if self.timeout_after == Some(AmbiguousMutation::Create) {
             self.timeout_after = None;
             return Err(TransportError::Timeout);
@@ -323,10 +387,10 @@ impl AnytypeTransport for FakeAnytypeTransport {
     fn update_object(&mut self, object: ObjectRecord) -> Result<ObjectRecord, TransportError> {
         self.update_calls += 1;
         self.take()?;
-        if !self.objects.contains_key(&object.id) {
+        if !self.objects.contains_in_space(&object.space_id, &object.id) {
             return Err(TransportError::NotFound);
         }
-        self.objects.insert(object.id.clone(), object.clone());
+        self.objects.insert_object(object.clone());
         if self.timeout_after == Some(AmbiguousMutation::Update) {
             self.timeout_after = None;
             return Err(TransportError::Timeout);
@@ -345,8 +409,7 @@ impl AnytypeTransport for FakeAnytypeTransport {
         self.take()?;
         let o = self
             .objects
-            .get_mut(object_id)
-            .filter(|o| o.space_id == space_id)
+            .get_mut_in_space(space_id, object_id)
             .ok_or(TransportError::NotFound)?;
         o.archived = true;
         let result = o.clone();
@@ -365,11 +428,10 @@ impl AnytypeTransport for FakeAnytypeTransport {
         self.take()?;
         let object = self
             .objects
-            .get(object_id)
-            .filter(|o| o.space_id == space_id)
+            .get_in_space(space_id, object_id)
             .cloned()
             .ok_or(TransportError::NotFound)?;
-        self.objects.remove(object_id);
+        self.objects.remove_in_space(space_id, object_id);
         if self.timeout_after == Some(AmbiguousMutation::Delete) {
             self.timeout_after = None;
             return Err(TransportError::Timeout);
@@ -964,12 +1026,53 @@ impl AnytypeTransport for HttpAnytypeTransport {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepositoryBinding {
+    pub domain_id: String,
+    pub binding_fingerprint: String,
+    pub upstream_account_fingerprint: String,
+    pub space_id: String,
+}
+
+impl RepositoryBinding {
+    pub fn from_domain(
+        binding: &DomainBinding,
+        upstream_account_fingerprint: &str,
+    ) -> Result<Self, DomainBindingsError> {
+        Ok(Self {
+            domain_id: binding.domain_id.clone(),
+            binding_fingerprint: binding.fingerprint(upstream_account_fingerprint)?,
+            upstream_account_fingerprint: upstream_account_fingerprint.into(),
+            space_id: binding.space_id.clone(),
+        })
+    }
+
+    fn legacy(space_id: &str) -> Self {
+        let bindings = DomainBindings::legacy_single_space(space_id, "contacts", "tasks")
+            .expect("legacy repository space must form a valid binding");
+        Self::from_domain(&bindings.bindings[0], "legacy-unscoped")
+            .expect("legacy repository binding must be valid")
+    }
+
+    fn operation_id(&self, kind: &str, identity: &str) -> String {
+        format!("{}:{kind}:{identity}", self.binding_fingerprint)
+    }
+
+    fn lock_key(&self, object_id: &str) -> String {
+        format!("{}:{object_id}", self.binding_fingerprint)
+    }
+
+    fn accepts(&self, object: &ObjectRecord, expected_id: Option<&str>) -> bool {
+        object.space_id == self.space_id && expected_id.is_none_or(|expected| object.id == expected)
+    }
+}
+
 /// Repository adapter. The in-memory repository is intentionally the durable
 /// contract cache for now; syncing to Anytype is explicit and transport-driven.
 pub struct AnytypeRepository<T> {
     pub transport: T,
     pub cache: MemoryRepository,
-    pub space_id: String,
+    pub binding: RepositoryBinding,
     pub property_write_mode: PropertyWriteMode,
     pub locks: ObjectLocks,
     pub reconciliation: ReconciliationPolicy,
@@ -978,10 +1081,15 @@ pub struct AnytypeRepository<T> {
 }
 impl<T> AnytypeRepository<T> {
     pub fn new(transport: T, space_id: impl Into<String>) -> Self {
+        let space_id = space_id.into();
+        Self::with_binding(transport, RepositoryBinding::legacy(&space_id))
+    }
+
+    pub fn with_binding(transport: T, binding: RepositoryBinding) -> Self {
         Self {
             transport,
             cache: MemoryRepository::new(),
-            space_id: space_id.into(),
+            binding,
             property_write_mode: PropertyWriteMode::CanonicalBodyOnly,
             locks: ObjectLocks::default(),
             reconciliation: ReconciliationPolicy::default(),
@@ -1145,24 +1253,29 @@ impl<T: AnytypeTransport> Repository for AnytypeRepository<T> {
             .get_resource(id)?
             .ok_or(RepositoryError::ResourceNotFound(id.clone()))?;
         let object_id = current.envelope.anytype_object_id.to_string();
-        let operation_id = format!("archive:{object_id}");
+        let operation_id = self.binding.operation_id("archive", &object_id);
+        let lock_key = self.binding.lock_key(&object_id);
         let locks = self.locks.clone();
         let ((), reads) = locks
-            .with_lock(&object_id, || {
+            .with_lock(&lock_key, || {
                 self.metrics.mutations = self.metrics.mutations.saturating_add(1);
                 let expected = ObjectRecord {
                     id: object_id.clone(),
-                    space_id: self.space_id.clone(),
+                    space_id: self.binding.space_id.clone(),
                     properties: Vec::new(),
                     property_formats: BTreeMap::new(),
                     body: String::new(),
                     archived: true,
                     revision: 0,
                 };
-                match self.transport.archive_object(&self.space_id, &object_id) {
-                    Ok(_) => self
+                match self
+                    .transport
+                    .archive_object(&self.binding.space_id, &object_id)
+                {
+                    Ok(actual) if self.binding.accepts(&actual, Some(&object_id)) => self
                         .confirm_archive(&object_id, false)
                         .map(|(_, reads)| ((), reads)),
+                    Ok(_) => Err(TransportError::Malformed),
                     Err(TransportError::Timeout) => {
                         self.metrics.ambiguous_mutations =
                             self.metrics.ambiguous_mutations.saturating_add(1);
@@ -1196,24 +1309,29 @@ impl<T: AnytypeTransport> Repository for AnytypeRepository<T> {
             .get_resource(id)?
             .ok_or(RepositoryError::ResourceNotFound(id.clone()))?;
         let object_id = current.envelope.anytype_object_id.to_string();
-        let operation_id = format!("delete:{object_id}");
+        let operation_id = self.binding.operation_id("delete", &object_id);
+        let lock_key = self.binding.lock_key(&object_id);
         let locks = self.locks.clone();
         let ((), reads) = locks
-            .with_lock(&object_id, || {
+            .with_lock(&lock_key, || {
                 self.metrics.mutations = self.metrics.mutations.saturating_add(1);
                 let expected = ObjectRecord {
                     id: object_id.clone(),
-                    space_id: self.space_id.clone(),
+                    space_id: self.binding.space_id.clone(),
                     properties: Vec::new(),
                     property_formats: BTreeMap::new(),
                     body: String::new(),
                     archived: true,
                     revision: 0,
                 };
-                match self.transport.delete_object(&self.space_id, &object_id) {
-                    Ok(_) => self
+                match self
+                    .transport
+                    .delete_object(&self.binding.space_id, &object_id)
+                {
+                    Ok(actual) if self.binding.accepts(&actual, Some(&object_id)) => self
                         .confirm_archive(&object_id, true)
                         .map(|(_, reads)| ((), reads)),
+                    Ok(_) => Err(TransportError::Malformed),
                     Err(TransportError::Timeout) => {
                         self.metrics.ambiguous_mutations =
                             self.metrics.ambiguous_mutations.saturating_add(1);
@@ -1252,20 +1370,27 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
         loop {
             let page = self
                 .transport
-                .list_objects(&self.space_id, cursor.as_deref())
+                .list_objects(&self.binding.space_id, cursor.as_deref())
                 .map_err(Self::map_transport_error)?;
             for listed in page.data {
+                if !self.binding.accepts(&listed, None) {
+                    return Err(RepositoryError::MalformedState);
+                }
+                let listed_id = listed.id.clone();
                 // API 2025-11-08 list responses intentionally contain the
                 // summary Object shape, not the full markdown body. Fetch
                 // the full object before attempting to hydrate our opaque
                 // canonical envelope.
                 let object = if listed.body.is_empty() && !listed.id.is_empty() {
                     self.transport
-                        .get_object(&self.space_id, &listed.id)
+                        .get_object(&self.binding.space_id, &listed.id)
                         .map_err(Self::map_transport_error)?
                 } else {
                     listed
                 };
+                if !self.binding.accepts(&object, Some(&listed_id)) {
+                    return Err(RepositoryError::MalformedState);
+                }
                 // A Space can contain ordinary Anytype notes/pages alongside
                 // DAV resources.  They are outside this adapter's namespace
                 // and must not make DAV discovery fail.  Once a body carries
@@ -1372,10 +1497,13 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
     ) -> Result<StoredResource, RepositoryError> {
         let object = self.object(&envelope, false)?;
         let provisional_id = object.id.clone();
-        let operation_id = format!("create:{}", envelope.dav_uid);
+        let operation_id = self
+            .binding
+            .operation_id("create", envelope.dav_uid.as_str());
+        let lock_key = self.binding.lock_key(&provisional_id);
         let locks = self.locks.clone();
         let (remote, reads) = locks
-            .with_lock(&provisional_id, || {
+            .with_lock(&lock_key, || {
                 self.metrics.mutations = self.metrics.mutations.saturating_add(1);
                 match self.transport.create_object(object.clone()) {
                     Ok(remote) => Ok((remote, 0)),
@@ -1388,7 +1516,7 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                 }
             })
             .map_err(Self::map_transport_error)?;
-        if remote.space_id != self.space_id || remote.id.trim().is_empty() {
+        if remote.space_id != self.binding.space_id || remote.id.trim().is_empty() {
             return Err(RepositoryError::MalformedState);
         }
         envelope.anytype_object_id = AnytypeObjectId::try_from(remote.id.clone())
@@ -1414,14 +1542,21 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
     ) -> Result<StoredResource, RepositoryError> {
         let mut object = self.object(&envelope, false)?;
         let object_id = object.id.clone();
-        let operation_id = format!("update:{object_id}");
+        let operation_id = self.binding.operation_id("update", &object_id);
+        let lock_key = self.binding.lock_key(&object_id);
         let locks = self.locks.clone();
-        let ((), reads) = locks.with_lock(&object_id, || {
+        let ((), reads) = locks.with_lock(&lock_key, || {
             // Unknown Anytype properties are outside the DAV projection but must
             // survive a DAV edit. Fetch and carry them forward atomically with the
             // remote update rather than rebuilding the object from the envelope.
-            match self.transport.get_object(&self.space_id, &object.id) {
+            match self
+                .transport
+                .get_object(&self.binding.space_id, &object.id)
+            {
                 Ok(existing) => {
+                    if !self.binding.accepts(&existing, Some(&object.id)) {
+                        return Err(RepositoryError::MalformedState);
+                    }
                     let projected = self.property_write_mode == PropertyWriteMode::Projected;
                     let formats = existing.property_formats;
                     for (key, value) in existing.properties {
@@ -1445,7 +1580,8 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
             }
             self.metrics.mutations = self.metrics.mutations.saturating_add(1);
             match self.transport.update_object(object.clone()) {
-                Ok(_) => Ok(((), 0)),
+                Ok(actual) if self.binding.accepts(&actual, Some(&object.id)) => Ok(((), 0)),
+                Ok(_) => Err(RepositoryError::MalformedState),
                 Err(TransportError::Timeout) => {
                     self.metrics.ambiguous_mutations =
                         self.metrics.ambiguous_mutations.saturating_add(1);
@@ -1484,6 +1620,9 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
         for _ in 0..self.reconciliation.max_reads {
             reads = reads.saturating_add(1);
             match self.transport.get_object(&expected.space_id, &expected.id) {
+                Ok(actual) if !self.binding.accepts(&actual, Some(&expected.id)) => {
+                    return Err(TransportError::Malformed);
+                }
                 Ok(actual) if mutation_matches(expected, &actual, kind) => {
                     self.metrics.reconciled_mutations =
                         self.metrics.reconciled_mutations.saturating_add(1);
@@ -1516,11 +1655,18 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                 .list_objects(&expected.space_id, cursor.as_deref())?;
             let mut candidate = None;
             for listed in page.data {
+                if !self.binding.accepts(&listed, None) {
+                    return Err(TransportError::Malformed);
+                }
+                let listed_id = listed.id.clone();
                 let actual = if listed.body.is_empty() && !listed.id.is_empty() {
                     self.transport.get_object(&expected.space_id, &listed.id)?
                 } else {
                     listed
                 };
+                if !self.binding.accepts(&actual, Some(&listed_id)) {
+                    return Err(TransportError::Malformed);
+                }
                 if create_identity_matches(expected, &actual) {
                     candidate = Some(actual);
                     break;
@@ -1548,11 +1694,14 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
         let mut reads: u8 = 0;
         for _ in 0..self.reconciliation.max_reads {
             reads = reads.saturating_add(1);
-            match self.transport.get_object(&self.space_id, object_id) {
-                Ok(actual) if actual.archived => {
+            match self.transport.get_object(&self.binding.space_id, object_id) {
+                Ok(actual) if self.binding.accepts(&actual, Some(object_id)) && actual.archived => {
                     self.metrics.archive_confirmations =
                         self.metrics.archive_confirmations.saturating_add(1);
                     return Ok((actual, reads));
+                }
+                Ok(actual) if !self.binding.accepts(&actual, Some(object_id)) => {
+                    return Err(TransportError::Malformed);
                 }
                 Ok(_) | Err(TransportError::DelayedVisibility) | Err(TransportError::Timeout) => {}
                 Err(TransportError::NotFound) if allow_missing => {
@@ -1561,7 +1710,7 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                     return Ok((
                         ObjectRecord {
                             id: object_id.into(),
-                            space_id: self.space_id.clone(),
+                            space_id: self.binding.space_id.clone(),
                             properties: Vec::new(),
                             property_formats: BTreeMap::new(),
                             body: String::new(),
@@ -1589,7 +1738,7 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
     ) -> Result<ObjectRecord, RepositoryError> {
         Ok(ObjectRecord {
             id: envelope.anytype_object_id.to_string(),
-            space_id: self.space_id.clone(),
+            space_id: self.binding.space_id.clone(),
             properties: match self.property_write_mode {
                 PropertyWriteMode::CanonicalBodyOnly => Vec::new(),
                 PropertyWriteMode::Projected => projected_properties(envelope),

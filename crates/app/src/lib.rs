@@ -773,7 +773,11 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         config.validate()?;
         let contacts = CollectionId::try_from(config.contacts_collection.as_str()).unwrap();
         let tasks = CollectionId::try_from(config.tasks_collection.as_str()).unwrap();
-        let mut server = DavServer::new(AnytypeRepository::new(transport, config.space_id.clone()));
+        let repository_binding = config.repository_binding(transport_mode)?;
+        let mut server = DavServer::new(AnytypeRepository::with_binding(
+            transport,
+            repository_binding,
+        ));
         server.contacts = contacts.clone();
         server.tasks = tasks.clone();
         match server.repository.create_collection(Collection {
@@ -790,12 +794,15 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             Ok(()) | Err(any_cal_core::RepositoryError::CollectionAlreadyExists(_)) => {}
             Err(error) => return Err(ConfigError::Repository(error.to_string())),
         }
-        let sync = config
-            .sync_checkpoint
-            .as_deref()
-            .map(SyncStore::open)
-            .transpose()
-            .map_err(|error| ConfigError::Io(error.to_string()))?;
+        let sync = if let Some(path) = config.sync_checkpoint.as_deref() {
+            let scope = config.sync_scope(transport_mode)?;
+            Some(
+                SyncStore::open_scoped(path, scope)
+                    .map_err(|error| ConfigError::Io(error.to_string()))?,
+            )
+        } else {
+            None
+        };
         let audit = config
             .audit_directory
             .as_deref()
