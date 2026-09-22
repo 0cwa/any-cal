@@ -1,4 +1,7 @@
-use any_cal_core::{CollectionId, DomainBindings};
+use any_cal_anytype_adapter::RepositoryBinding;
+use any_cal_core::{CollectionId, DomainBinding, DomainBindings};
+use any_cal_sync::SyncScope;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::net::ToSocketAddrs;
 use std::path::Path;
@@ -171,6 +174,60 @@ impl AppConfig {
             &self.tasks_collection,
         )
         .map_err(|_| ConfigError::Invalid("invalid domain binding configuration".into()))
+    }
+
+    pub fn sync_scope(&self, transport_mode: &str) -> Result<SyncScope, ConfigError> {
+        let (binding, account_fingerprint) = self.binding_context(transport_mode)?;
+        SyncScope::for_binding(&binding, &self.endpoint, &account_fingerprint)
+            .map_err(|_| ConfigError::Invalid("invalid sync binding scope".into()))
+    }
+
+    pub(crate) fn repository_binding(
+        &self,
+        transport_mode: &str,
+    ) -> Result<RepositoryBinding, ConfigError> {
+        let (binding, account_fingerprint) = self.binding_context(transport_mode)?;
+        RepositoryBinding::from_domain(&binding, &account_fingerprint)
+            .map_err(|_| ConfigError::Invalid("invalid repository binding scope".into()))
+    }
+
+    fn binding_context(
+        &self,
+        transport_mode: &str,
+    ) -> Result<(DomainBinding, String), ConfigError> {
+        if transport_mode.trim().is_empty() || transport_mode.chars().any(char::is_control) {
+            return Err(ConfigError::Invalid("invalid transport identity".into()));
+        }
+        let bindings = self.domain_bindings()?;
+        let [binding] = bindings.bindings.as_slice() else {
+            return Err(ConfigError::Invalid(
+                "runtime requires exactly one domain binding".into(),
+            ));
+        };
+        Ok((
+            binding.clone(),
+            self.account_context_fingerprint(transport_mode),
+        ))
+    }
+
+    fn account_context_fingerprint(&self, transport_mode: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"any-cal-upstream-account-context-v1");
+        if let Some(token) = self.token.as_deref() {
+            hasher.update(b"\0token\0");
+            hasher.update(token.as_bytes());
+        } else {
+            hasher.update(b"\0transport\0");
+            hasher.update(transport_mode.as_bytes());
+        }
+        let digest = hasher.finalize();
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut fingerprint = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            fingerprint.push(HEX[(byte >> 4) as usize] as char);
+            fingerprint.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        fingerprint
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
