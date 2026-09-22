@@ -62,10 +62,8 @@ fn contact(path: &str, name: &str) -> Request {
         "PUT",
         path,
         Some("text/vcard"),
-        format!(
-            "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:same-contact\r\nFN:{name}\r\nEND:VCARD\r\n"
-        )
-        .as_bytes(),
+        format!("BEGIN:VCARD\r\nVERSION:4.0\r\nUID:same-contact\r\nFN:{name}\r\nEND:VCARD\r\n")
+            .as_bytes(),
     )
 }
 
@@ -197,29 +195,28 @@ fn update_and_archive_of_same_task_identity_do_not_cross_spaces() {
         .contains("SUMMARY:Shared task"));
 
     assert_eq!(
-        app.handle(request(
-            "DELETE",
-            "/caldav/shared/same-task.ics",
-            None,
-            &[]
-        ))
-        .status,
+        app.handle(request("DELETE", "/caldav/shared/same-task.ics", None, &[]))
+            .status,
         204
     );
     assert_eq!(get(&mut app, "/caldav/shared/same-task.ics").status, 404);
     assert_eq!(get(&mut app, "/caldav/personal/same-task.ics").status, 200);
 
     let transport = &app.server.repository.transport;
-    assert!(!transport
-        .objects
-        .get_in_space("space-a", "same-task")
-        .unwrap()
-        .archived);
-    assert!(transport
-        .objects
-        .get_in_space("space-b", "same-task")
-        .unwrap()
-        .archived);
+    assert!(
+        !transport
+            .objects
+            .get_in_space("space-a", "same-task")
+            .unwrap()
+            .archived
+    );
+    assert!(
+        transport
+            .objects
+            .get_in_space("space-b", "same-task")
+            .unwrap()
+            .archived
+    );
 }
 
 #[test]
@@ -235,7 +232,10 @@ fn missing_resource_in_other_space_and_unknown_routes_do_not_mutate_active_bindi
         .status,
         201
     );
-    assert_eq!(get(&mut app, "/carddav/shared/same-contact.vcf").status, 404);
+    assert_eq!(
+        get(&mut app, "/carddav/shared/same-contact.vcf").status,
+        404
+    );
 
     // The miss in B must not be interpreted as a deletion/tombstone of A, and
     // switching back must recover A's binding-scoped cache/remote view.
@@ -244,14 +244,15 @@ fn missing_resource_in_other_space_and_unknown_routes_do_not_mutate_active_bindi
     assert!(String::from_utf8(personal.body)
         .unwrap()
         .contains("FN:Only in personal"));
-    assert!(!app
-        .server
-        .repository
-        .transport
-        .objects
-        .get_in_space("space-a", "same-contact")
-        .unwrap()
-        .archived);
+    assert!(
+        !app.server
+            .repository
+            .transport
+            .objects
+            .get_in_space("space-a", "same-contact")
+            .unwrap()
+            .archived
+    );
 
     // A DAV-looking path that is not present in the binding contract must fail
     // closed instead of being interpreted through whichever domain is active.
@@ -263,9 +264,11 @@ fn missing_resource_in_other_space_and_unknown_routes_do_not_mutate_active_bindi
         get(&mut app, "/caldav/not-configured/same-task.ics").status,
         404
     );
-    assert_eq!(get(&mut app, "/carddav/personal/same-contact.vcf").status, 200);
+    assert_eq!(
+        get(&mut app, "/carddav/personal/same-contact.vcf").status,
+        200
+    );
 }
-
 
 #[test]
 fn hard_delete_after_route_selection_remains_in_selected_space() {
