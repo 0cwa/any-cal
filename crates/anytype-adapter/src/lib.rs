@@ -1371,6 +1371,7 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                 if !self.binding.accepts(&listed, None) {
                     return Err(RepositoryError::MalformedState);
                 }
+                let listed_id = listed.id.clone();
                 // API 2025-11-08 list responses intentionally contain the
                 // summary Object shape, not the full markdown body. Fetch
                 // the full object before attempting to hydrate our opaque
@@ -1382,7 +1383,7 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                 } else {
                     listed
                 };
-                if !self.binding.accepts(&object, None) {
+                if !self.binding.accepts(&object, Some(&listed_id)) {
                     return Err(RepositoryError::MalformedState);
                 }
                 // A Space can contain ordinary Anytype notes/pages alongside
@@ -1611,6 +1612,9 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
         for _ in 0..self.reconciliation.max_reads {
             reads = reads.saturating_add(1);
             match self.transport.get_object(&expected.space_id, &expected.id) {
+                Ok(actual) if !self.binding.accepts(&actual, Some(&expected.id)) => {
+                    return Err(TransportError::Malformed);
+                }
                 Ok(actual) if mutation_matches(expected, &actual, kind) => {
                     self.metrics.reconciled_mutations =
                         self.metrics.reconciled_mutations.saturating_add(1);
@@ -1643,11 +1647,18 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                 .list_objects(&expected.space_id, cursor.as_deref())?;
             let mut candidate = None;
             for listed in page.data {
+                if !self.binding.accepts(&listed, None) {
+                    return Err(TransportError::Malformed);
+                }
+                let listed_id = listed.id.clone();
                 let actual = if listed.body.is_empty() && !listed.id.is_empty() {
                     self.transport.get_object(&expected.space_id, &listed.id)?
                 } else {
                     listed
                 };
+                if !self.binding.accepts(&actual, Some(&listed_id)) {
+                    return Err(TransportError::Malformed);
+                }
                 if create_identity_matches(expected, &actual) {
                     candidate = Some(actual);
                     break;
