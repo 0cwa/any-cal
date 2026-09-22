@@ -50,7 +50,10 @@ fn sync_scope_is_non_secret_and_changes_with_upstream_context() {
     endpoint.endpoint = "http://127.0.0.1:31013".into();
     let endpoint_scope = endpoint.sync_scope("custom").unwrap();
     assert_ne!(base, endpoint_scope);
-    assert_ne!(base.endpoint_fingerprint, endpoint_scope.endpoint_fingerprint);
+    assert_ne!(
+        base.endpoint_fingerprint,
+        endpoint_scope.endpoint_fingerprint
+    );
     assert_ne!(base.account_fingerprint, endpoint_scope.account_fingerprint);
     assert_ne!(base.binding_fingerprint, endpoint_scope.binding_fingerprint);
 
