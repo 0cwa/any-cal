@@ -295,7 +295,10 @@ fn hard_delete_after_route_selection_remains_in_selected_space() {
     // Select the shared binding through the public route before exercising the
     // repository's hard-delete operation. The binding-scoped repository must
     // remove only the object in space-b even though space-a has the same ID.
-    assert_eq!(get(&mut app, "/carddav/shared/same-contact.vcf").status, 200);
+    assert_eq!(
+        get(&mut app, "/carddav/shared/same-contact.vcf").status,
+        200
+    );
     app.server
         .repository
         .delete_resource(
@@ -318,5 +321,8 @@ fn hard_delete_after_route_selection_remains_in_selected_space() {
         .objects
         .get_in_space("space-a", "same-contact")
         .is_some());
-    assert_eq!(get(&mut app, "/carddav/personal/same-contact.vcf").status, 200);
+    assert_eq!(
+        get(&mut app, "/carddav/personal/same-contact.vcf").status,
+        200
+    );
 }
