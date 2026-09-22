@@ -874,12 +874,11 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         let active_domain_id = active_binding.domain_id.clone();
         let (contacts, tasks) = binding_collection_ids(&active_binding)?;
         let repository_binding = config.repository_binding_for(&active_binding, transport_mode)?;
-        let mut server = DavServer::new(AnytypeRepository::with_binding(
-            transport,
-            repository_binding,
-        ));
-        server.contacts = contacts.clone();
-        server.tasks = tasks.clone();
+        let mut server = DavServer {
+            repository: AnytypeRepository::with_binding(transport, repository_binding),
+            contacts: contacts.clone(),
+            tasks: tasks.clone(),
+        };
         ensure_collection(&mut server.repository.cache, contacts, "Contacts")?;
         ensure_collection(&mut server.repository.cache, tasks, "Tasks")?;
 
