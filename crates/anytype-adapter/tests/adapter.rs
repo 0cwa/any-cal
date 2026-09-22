@@ -23,6 +23,63 @@ fn object(id: &str, space: &str) -> ObjectRecord {
     }
 }
 
+
+#[test]
+fn fake_transport_keeps_identical_object_ids_isolated_by_space() {
+    let mut transport = FakeAnytypeTransport::new(10);
+    transport
+        .create_object(object("shared-id", "space-a"))
+        .unwrap();
+    transport
+        .create_object(object("shared-id", "space-b"))
+        .unwrap();
+
+    assert_eq!(
+        transport
+            .get_object("space-a", "shared-id")
+            .unwrap()
+            .space_id,
+        "space-a"
+    );
+    assert_eq!(
+        transport
+            .get_object("space-b", "shared-id")
+            .unwrap()
+            .space_id,
+        "space-b"
+    );
+    assert!(
+        transport.objects.get("shared-id").is_none(),
+        "legacy ID-only lookup must fail closed when multiple Spaces match"
+    );
+
+    transport.archive_object("space-a", "shared-id").unwrap();
+    assert!(
+        transport
+            .get_object("space-a", "shared-id")
+            .unwrap()
+            .archived
+    );
+    assert!(
+        !transport
+            .get_object("space-b", "shared-id")
+            .unwrap()
+            .archived
+    );
+
+    transport.delete_object("space-b", "shared-id").unwrap();
+    assert!(matches!(
+        transport.get_object("space-b", "shared-id"),
+        Err(TransportError::NotFound)
+    ));
+    assert!(
+        transport
+            .get_object("space-a", "shared-id")
+            .unwrap()
+            .archived
+    );
+}
+
 #[derive(Clone, Debug)]
 struct ServerAssignedTransport {
     inner: FakeAnytypeTransport,
@@ -476,7 +533,13 @@ fn archive_is_confirmed_and_omitted_from_normal_relist() {
         .list_resources(&e.collection_id, false)
         .unwrap()
         .is_empty());
-    assert!(repo.transport.objects[&e.anytype_object_id.to_string()].archived);
+    assert!(
+        repo.transport
+            .objects
+            .get_in_space("space", e.anytype_object_id.as_str())
+            .unwrap()
+            .archived
+    );
 }
 
 #[test]
