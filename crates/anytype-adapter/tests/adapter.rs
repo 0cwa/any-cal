@@ -24,7 +24,6 @@ fn object(id: &str, space: &str) -> ObjectRecord {
     }
 }
 
-
 fn repository_binding(space_id: &str, account_fingerprint: &str) -> RepositoryBinding {
     let bindings = DomainBindings::legacy_single_space(space_id, "contacts", "tasks").unwrap();
     RepositoryBinding::from_domain(&bindings.bindings[0], account_fingerprint).unwrap()
@@ -55,17 +54,11 @@ impl AnytypeTransport for WrongSpaceTransport {
         Ok(self.object.clone())
     }
 
-    fn create_object(
-        &mut self,
-        _object: ObjectRecord,
-    ) -> Result<ObjectRecord, TransportError> {
+    fn create_object(&mut self, _object: ObjectRecord) -> Result<ObjectRecord, TransportError> {
         Ok(self.object.clone())
     }
 
-    fn update_object(
-        &mut self,
-        _object: ObjectRecord,
-    ) -> Result<ObjectRecord, TransportError> {
+    fn update_object(&mut self, _object: ObjectRecord) -> Result<ObjectRecord, TransportError> {
         Ok(self.object.clone())
     }
 
@@ -86,17 +79,14 @@ impl AnytypeTransport for WrongSpaceTransport {
     }
 }
 
-
 #[test]
 fn binding_scoped_repository_rejects_wrong_space_transport_responses() {
     let wrong = object("wrong-space-object", "space-b");
     let transport = WrongSpaceTransport {
         object: wrong.clone(),
     };
-    let mut repo = AnytypeRepository::with_binding(
-        transport,
-        repository_binding("space-a", "account-a"),
-    );
+    let mut repo =
+        AnytypeRepository::with_binding(transport, repository_binding("space-a", "account-a"));
 
     assert!(matches!(
         repo.list_collections(),
@@ -104,10 +94,8 @@ fn binding_scoped_repository_rejects_wrong_space_transport_responses() {
     ));
 
     let transport = WrongSpaceTransport { object: wrong };
-    let mut repo = AnytypeRepository::with_binding(
-        transport,
-        repository_binding("space-a", "account-a"),
-    );
+    let mut repo =
+        AnytypeRepository::with_binding(transport, repository_binding("space-a", "account-a"));
     assert!(matches!(
         repo.create_resource(
             envelope("contacts", "cross-space-create", DavKind::Contact),
@@ -130,17 +118,20 @@ fn operation_identity_changes_with_repository_binding() {
         repository_binding("space-b", "account-a"),
     );
 
-    left.create_resource(
-        input.clone(),
-        any_cal_core::WriteCondition::Unconditional,
-    )
-    .unwrap();
+    left.create_resource(input.clone(), any_cal_core::WriteCondition::Unconditional)
+        .unwrap();
     right
         .create_resource(input, any_cal_core::WriteCondition::Unconditional)
         .unwrap();
 
-    assert_ne!(left.binding.binding_fingerprint, right.binding.binding_fingerprint);
-    assert_ne!(left.receipts[0].operation_id, right.receipts[0].operation_id);
+    assert_ne!(
+        left.binding.binding_fingerprint,
+        right.binding.binding_fingerprint
+    );
+    assert_ne!(
+        left.receipts[0].operation_id,
+        right.receipts[0].operation_id
+    );
 }
 
 #[test]
