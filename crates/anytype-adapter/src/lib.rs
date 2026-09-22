@@ -205,8 +205,73 @@ pub enum TransportError {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct FakeObjectStore {
+    objects: BTreeMap<(String, String), ObjectRecord>,
+}
+
+impl FakeObjectStore {
+    pub fn insert(
+        &mut self,
+        legacy_object_id: String,
+        object: ObjectRecord,
+    ) -> Option<ObjectRecord> {
+        assert_eq!(
+            legacy_object_id, object.id,
+            "fake object map key must match ObjectRecord.id"
+        );
+        self.insert_object(object)
+    }
+
+    pub fn insert_object(&mut self, object: ObjectRecord) -> Option<ObjectRecord> {
+        let key = (object.space_id.clone(), object.id.clone());
+        self.objects.insert(key, object)
+    }
+
+    pub fn get(&self, object_id: &str) -> Option<&ObjectRecord> {
+        let mut matching = self
+            .objects
+            .values()
+            .filter(|object| object.id == object_id);
+        let first = matching.next()?;
+        matching.next().is_none().then_some(first)
+    }
+
+    pub fn get_in_space(&self, space_id: &str, object_id: &str) -> Option<&ObjectRecord> {
+        self.objects
+            .get(&(space_id.to_owned(), object_id.to_owned()))
+    }
+
+    pub fn get_mut_in_space(
+        &mut self,
+        space_id: &str,
+        object_id: &str,
+    ) -> Option<&mut ObjectRecord> {
+        self.objects
+            .get_mut(&(space_id.to_owned(), object_id.to_owned()))
+    }
+
+    pub fn contains_key(&self, object_id: &str) -> bool {
+        self.get(object_id).is_some()
+    }
+
+    pub fn contains_in_space(&self, space_id: &str, object_id: &str) -> bool {
+        self.objects
+            .contains_key(&(space_id.to_owned(), object_id.to_owned()))
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &ObjectRecord> {
+        self.objects.values()
+    }
+
+    pub fn remove_in_space(&mut self, space_id: &str, object_id: &str) -> Option<ObjectRecord> {
+        self.objects
+            .remove(&(space_id.to_owned(), object_id.to_owned()))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct FakeAnytypeTransport {
-    pub objects: BTreeMap<String, ObjectRecord>,
+    pub objects: FakeObjectStore,
     pub page_size: usize,
     pub failure: Option<TransportError>,
     pub delayed: bool,
@@ -299,18 +364,17 @@ impl AnytypeTransport for FakeAnytypeTransport {
             return Err(TransportError::DelayedVisibility);
         }
         self.objects
-            .get(object_id)
-            .filter(|o| o.space_id == space_id)
+            .get_in_space(space_id, object_id)
             .cloned()
             .ok_or(TransportError::NotFound)
     }
     fn create_object(&mut self, object: ObjectRecord) -> Result<ObjectRecord, TransportError> {
         self.create_calls += 1;
         self.take()?;
-        if self.objects.contains_key(&object.id) {
+        if self.objects.contains_in_space(&object.space_id, &object.id) {
             return Err(TransportError::Conflict);
         }
-        self.objects.insert(object.id.clone(), object.clone());
+        self.objects.insert_object(object.clone());
         if self.timeout_after == Some(AmbiguousMutation::Create) {
             self.timeout_after = None;
             return Err(TransportError::Timeout);
@@ -323,10 +387,10 @@ impl AnytypeTransport for FakeAnytypeTransport {
     fn update_object(&mut self, object: ObjectRecord) -> Result<ObjectRecord, TransportError> {
         self.update_calls += 1;
         self.take()?;
-        if !self.objects.contains_key(&object.id) {
+        if !self.objects.contains_in_space(&object.space_id, &object.id) {
             return Err(TransportError::NotFound);
         }
-        self.objects.insert(object.id.clone(), object.clone());
+        self.objects.insert_object(object.clone());
         if self.timeout_after == Some(AmbiguousMutation::Update) {
             self.timeout_after = None;
             return Err(TransportError::Timeout);
@@ -345,8 +409,7 @@ impl AnytypeTransport for FakeAnytypeTransport {
         self.take()?;
         let o = self
             .objects
-            .get_mut(object_id)
-            .filter(|o| o.space_id == space_id)
+            .get_mut_in_space(space_id, object_id)
             .ok_or(TransportError::NotFound)?;
         o.archived = true;
         let result = o.clone();
@@ -365,11 +428,10 @@ impl AnytypeTransport for FakeAnytypeTransport {
         self.take()?;
         let object = self
             .objects
-            .get(object_id)
-            .filter(|o| o.space_id == space_id)
+            .get_in_space(space_id, object_id)
             .cloned()
             .ok_or(TransportError::NotFound)?;
-        self.objects.remove(object_id);
+        self.objects.remove_in_space(space_id, object_id);
         if self.timeout_after == Some(AmbiguousMutation::Delete) {
             self.timeout_after = None;
             return Err(TransportError::Timeout);
