@@ -434,10 +434,21 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             .then(|| self.options_write_allowed(&request))
             .flatten();
         let durable = matches!(method.as_str(), "PUT" | "DELETE");
-        if let Some(domain_id) = self
+        let route_domain = self
             .resolve_request_route(&request.path)
-            .map(|(binding, _)| binding.domain_id.clone())
+            .map(|(binding, _)| binding.domain_id.clone());
+        let collection_home = matches!(request.path.as_str(), "/carddav/" | "/caldav/");
+        if (request.path.starts_with("/carddav/") || request.path.starts_with("/caldav/"))
+            && !collection_home
+            && route_domain.is_none()
         {
+            return any_cal_dav_server::Response {
+                status: 404,
+                headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                body: b"not found".to_vec(),
+            };
+        }
+        if let Some(domain_id) = route_domain {
             if self.activate_domain(&domain_id).is_err() {
                 return any_cal_dav_server::Response {
                     status: 500,
