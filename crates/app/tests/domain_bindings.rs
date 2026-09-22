@@ -67,7 +67,6 @@ fn sync_scope_is_non_secret_and_changes_with_upstream_context() {
     assert_ne!(base.binding_fingerprint, rotated_scope.binding_fingerprint);
 }
 
-
 #[test]
 fn explicit_multi_domain_routes_keep_same_resource_identity_space_qualified() {
     let mut config = AppConfig::defaults();
