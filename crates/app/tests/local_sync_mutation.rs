@@ -20,7 +20,6 @@ fn temporary_path(label: &str) -> PathBuf {
         std::process::id()
     ))
 }
-
 fn remove_checkpoint(path: &Path) {
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(path.with_extension("bak"));
@@ -248,8 +247,7 @@ fn app_checkpoint_rejects_space_endpoint_and_token_context_changes() {
     config.sync_checkpoint = Some(checkpoint.to_string_lossy().into_owned());
 
     {
-        let mut app =
-            App::with_transport(config.clone(), FakeAnytypeTransport::new(2)).unwrap();
+        let mut app = App::with_transport(config.clone(), FakeAnytypeTransport::new(2)).unwrap();
         let created = app.handle(request(
             "PUT",
             "/carddav/contacts/scoped.vcf",
