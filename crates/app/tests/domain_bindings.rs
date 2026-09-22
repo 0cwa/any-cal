@@ -29,3 +29,30 @@ fn invalid_scalar_config_does_not_produce_domain_bindings() {
     let config = AppConfig::defaults();
     assert!(config.domain_bindings().is_err());
 }
+
+#[test]
+fn sync_scope_is_non_secret_and_changes_with_upstream_context() {
+    let mut config = AppConfig::defaults();
+    config.space_id = "space-a".into();
+    config.token = Some("synthetic-token-a".into());
+
+    let base = config.sync_scope("custom").unwrap();
+    assert_eq!(base.domain_id, "legacy-default");
+    assert_eq!(base.space_id, "space-a");
+    assert_eq!(base.account_fingerprint.len(), 64);
+    assert_eq!(base.endpoint_fingerprint.len(), 64);
+    assert!(!base.account_fingerprint.contains("synthetic-token-a"));
+
+    let mut moved = config.clone();
+    moved.space_id = "space-b".into();
+    assert_ne!(base, moved.sync_scope("custom").unwrap());
+
+    let mut endpoint = config.clone();
+    endpoint.endpoint = "http://127.0.0.1:31013".into();
+    assert_ne!(base, endpoint.sync_scope("custom").unwrap());
+
+    let mut rotated = config;
+    rotated.token = Some("synthetic-token-b".into());
+    assert_ne!(base, rotated.sync_scope("custom").unwrap());
+}
+
