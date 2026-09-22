@@ -213,6 +213,8 @@ impl AppConfig {
     fn account_context_fingerprint(&self, transport_mode: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(b"any-cal-upstream-account-context-v1");
+        hasher.update(b"\0endpoint\0");
+        hasher.update(self.endpoint.as_bytes());
         if let Some(token) = self.token.as_deref() {
             hasher.update(b"\0token\0");
             hasher.update(token.as_bytes());
