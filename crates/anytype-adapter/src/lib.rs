@@ -1269,7 +1269,10 @@ impl<T: AnytypeTransport> Repository for AnytypeRepository<T> {
                     archived: true,
                     revision: 0,
                 };
-                match self.transport.archive_object(&self.binding.space_id, &object_id) {
+                match self
+                    .transport
+                    .archive_object(&self.binding.space_id, &object_id)
+                {
                     Ok(actual) if self.binding.accepts(&actual, Some(&object_id)) => self
                         .confirm_archive(&object_id, false)
                         .map(|(_, reads)| ((), reads)),
@@ -1322,7 +1325,10 @@ impl<T: AnytypeTransport> Repository for AnytypeRepository<T> {
                     archived: true,
                     revision: 0,
                 };
-                match self.transport.delete_object(&self.binding.space_id, &object_id) {
+                match self
+                    .transport
+                    .delete_object(&self.binding.space_id, &object_id)
+                {
                     Ok(actual) if self.binding.accepts(&actual, Some(&object_id)) => self
                         .confirm_archive(&object_id, true)
                         .map(|(_, reads)| ((), reads)),
@@ -1544,7 +1550,10 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
             // Unknown Anytype properties are outside the DAV projection but must
             // survive a DAV edit. Fetch and carry them forward atomically with the
             // remote update rather than rebuilding the object from the envelope.
-            match self.transport.get_object(&self.binding.space_id, &object.id) {
+            match self
+                .transport
+                .get_object(&self.binding.space_id, &object.id)
+            {
                 Ok(existing) => {
                     if !self.binding.accepts(&existing, Some(&object.id)) {
                         return Err(RepositoryError::MalformedState);
@@ -1687,9 +1696,7 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
         for _ in 0..self.reconciliation.max_reads {
             reads = reads.saturating_add(1);
             match self.transport.get_object(&self.binding.space_id, object_id) {
-                Ok(actual)
-                    if self.binding.accepts(&actual, Some(object_id)) && actual.archived =>
-                {
+                Ok(actual) if self.binding.accepts(&actual, Some(object_id)) && actual.archived => {
                     self.metrics.archive_confirmations =
                         self.metrics.archive_confirmations.saturating_add(1);
                     return Ok((actual, reads));
