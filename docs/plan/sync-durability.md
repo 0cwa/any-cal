@@ -63,6 +63,14 @@ payloads carry the scope inside the integrity-protected state, and in-process re
 requires an exact scope match before publication.
 
 This API is the persistence seam for the Space-qualified routing work in issue #3.
-The application currently still opens legacy unscoped checkpoints; switching the app
-to `open_scoped` belongs in a separate wiring slice so the runtime can derive the
-scope from the exact resolved domain binding rather than guessing from scalar config.
+The current single-domain application now derives the exact `legacy-default` binding
+plus a non-secret upstream account-context fingerprint at startup and opens configured
+checkpoints with `open_scoped`. Reusing a checkpoint after changing Space, endpoint,
+or credential context therefore fails closed.
+
+The same resolved binding context is also passed into `AnytypeRepository`. Repository
+lock keys and operation IDs are qualified by the binding fingerprint, and adapter reads,
+writes, archive/delete confirmation, and ambiguous-write reconciliation reject transport
+responses whose Space or requested object identity does not match the bound repository.
+Explicit multi-domain configuration remains disabled until DAV route selection can choose
+one of these binding-scoped repository contexts without falling back to scalar `space_id`.
