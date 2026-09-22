@@ -1,7 +1,7 @@
-use any_cal_app::{App, AppConfig};
 use any_cal_anytype_adapter::FakeAnytypeTransport;
-use any_cal_dav_server::Request;
+use any_cal_app::{App, AppConfig};
 use any_cal_core::{DavRoute, VisibilityIntent};
+use any_cal_dav_server::Request;
 
 #[test]
 fn scalar_app_config_projects_to_one_legacy_domain_binding() {
@@ -132,12 +132,17 @@ fn explicit_multi_domain_routes_keep_same_resource_identity_space_qualified() {
         method: "PUT".into(),
         path: "/carddav/shared/same.vcf".into(),
         headers: vec![("Content-Type".into(), "text/vcard".into())],
-        body: b"BEGIN:VCARD\r\nVERSION:4.0\r\nUID:same\r\nFN:Shared Bob\r\nEND:VCARD\r\n"
-            .to_vec(),
+        body: b"BEGIN:VCARD\r\nVERSION:4.0\r\nUID:same\r\nFN:Shared Bob\r\nEND:VCARD\r\n".to_vec(),
     });
     assert_eq!(shared.status, 201);
 
-    let objects = app.server.repository.transport.objects.values().collect::<Vec<_>>();
+    let objects = app
+        .server
+        .repository
+        .transport
+        .objects
+        .values()
+        .collect::<Vec<_>>();
     assert_eq!(objects.len(), 2);
     assert!(objects.iter().any(|object| object.space_id == "space-a"));
     assert!(objects.iter().any(|object| object.space_id == "space-b"));
