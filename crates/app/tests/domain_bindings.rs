@@ -54,4 +54,3 @@ fn sync_scope_is_non_secret_and_changes_with_upstream_context() {
     rotated.token = Some("synthetic-token-b".into());
     assert_ne!(base, rotated.sync_scope("custom").unwrap());
 }
-
