@@ -121,9 +121,7 @@ fn android_push_updates_anytype_and_archives_with_stable_decisions() {
     );
     assert_eq!(created_body["decisions"][0]["decision"], "upsert");
     assert!(app
-        .server
-        .repository
-        .transport
+        .transport_snapshot()
         .objects
         .get("object-new")
         .is_some_and(|object| !object.archived));
@@ -143,9 +141,7 @@ fn android_push_updates_anytype_and_archives_with_stable_decisions() {
     assert_eq!(archived_body["decisions"][0]["decision"], "archive");
     assert_eq!(archived_body["tombstones"][0]["canonical_id"], "object-new");
     assert!(app
-        .server
-        .repository
-        .transport
+        .transport_snapshot()
         .objects
         .get("object-new")
         .is_some_and(|object| object.archived));
