@@ -615,9 +615,9 @@ impl<R: Repository> DavServer<R> {
             let path = format!(
                 "{}/{}{}",
                 if contact {
-                    "/carddav/contacts"
+                    format!("/carddav/{collection}")
                 } else {
-                    "/caldav/tasks"
+                    format!("/caldav/{collection}")
                 },
                 row.envelope.resource_id,
                 suffix
