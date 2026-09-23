@@ -20,6 +20,7 @@ use serde::Serialize;
 
 mod admin;
 mod config;
+pub mod discovery;
 mod domain_registry;
 mod http;
 pub mod identity;
