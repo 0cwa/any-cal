@@ -42,6 +42,13 @@ pub struct SchemaRequirementDiagnostic {
     pub state: RequirementState,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct DiscoverySnapshotKey {
+    space_id: String,
+    schema_profile: String,
+    binding_fingerprint: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SpaceDiscoverySnapshot {
     pub domain_id: String,
@@ -84,8 +91,9 @@ where
             .clone();
 
         // A failed refresh must not leave a previously successful snapshot
-        // looking current for this binding.
-        self.discovery_snapshots.remove(domain_id);
+        // looking current for this canonical domain.
+        self.discovery_snapshots
+            .retain(|_, snapshot| snapshot.domain_id != domain_id);
 
         let spaces = collect_pages(|offset| {
             self.registry
@@ -156,14 +164,25 @@ where
             diagnostics,
         };
         self.discovery_snapshots
-            .insert(domain_id.to_owned(), snapshot.clone());
+            .insert(snapshot.discovery_key(), snapshot.clone());
         Ok(snapshot)
     }
 
     pub fn discovery_snapshot(&self, domain_id: &str) -> Option<&SpaceDiscoverySnapshot> {
-        let snapshot = self.discovery_snapshots.get(domain_id)?;
-        self.snapshot_matches_current_binding(snapshot)
-            .then_some(snapshot)
+        let context = self.registry.context(domain_id)?;
+        let key = DiscoverySnapshotKey {
+            space_id: context.binding.space_id.clone(),
+            schema_profile: context.binding.schema_profile.clone(),
+            binding_fingerprint: context
+                .server
+                .repository
+                .binding
+                .binding_fingerprint
+                .clone(),
+        };
+        self.discovery_snapshots.get(&key).and_then(|snapshot| {
+            (snapshot.domain_id == domain_id).then_some(snapshot)
+        })
     }
 
     /// Discover views for a list that is already known inside the configured
@@ -189,6 +208,16 @@ where
         })?;
         views.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(views)
+    }
+}
+
+impl SpaceDiscoverySnapshot {
+    pub(crate) fn discovery_key(&self) -> DiscoverySnapshotKey {
+        DiscoverySnapshotKey {
+            space_id: self.space_id.clone(),
+            schema_profile: self.schema_profile.clone(),
+            binding_fingerprint: self.binding_fingerprint.clone(),
+        }
     }
 }
 
