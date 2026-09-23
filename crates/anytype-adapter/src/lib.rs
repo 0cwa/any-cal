@@ -668,6 +668,16 @@ fn valid_header_value(value: &str) -> bool {
     !value.chars().any(char::is_control)
 }
 
+fn paginated_path(base: String, offset: Option<&str>) -> Result<String, TransportError> {
+    let offset = offset.unwrap_or("0");
+    if offset.is_empty() || !offset.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(TransportError::InvalidRequest(
+            "pagination offset must be numeric".into(),
+        ));
+    }
+    Ok(format!("{base}?offset={offset}&limit=100"))
+}
+
 fn encode_path_segment(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -726,6 +736,14 @@ impl HttpAnytypeTransport {
     pub fn with_exchange(mut self, exchange: Box<dyn HttpExchange>) -> Self {
         self.exchange = Some(exchange);
         self
+    }
+    fn discovery_page<T: serde::de::DeserializeOwned>(
+        &mut self,
+        path: String,
+    ) -> Result<Page<T>, TransportError> {
+        let response = self.request("GET", &path, None)?;
+        let (data, next_offset) = wire::decode_discovery_list(&response.body)?;
+        Ok(Page { data, next_offset })
     }
     fn request(
         &mut self,
