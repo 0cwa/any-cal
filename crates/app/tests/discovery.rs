@@ -5,6 +5,7 @@ use any_cal_anytype_adapter::{
 };
 use any_cal_app::discovery::{DiscoveryError, RequirementState};
 use any_cal_app::{AppConfig, AppWithTransport};
+use any_cal_dav_server::Request;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
@@ -283,4 +284,18 @@ fn capability_discovery_is_binding_scoped_read_only_and_non_authoritative() {
         app.discover_domain_capabilities("not-configured").unwrap_err(),
         DiscoveryError::UnknownDomain
     );
+
+    let status = app.handle(Request {
+        method: "GET".into(),
+        path: "/status".into(),
+        headers: vec![],
+        body: vec![],
+    });
+    assert_eq!(status.status, 200);
+    let status: serde_json::Value = serde_json::from_slice(&status.body).unwrap();
+    assert_eq!(status["schema"]["status"], "body_only");
+    assert_eq!(status["schema"]["ready"], false);
+    assert_eq!(status["schema"]["body_only_available"], true);
+    assert_eq!(status["schema"]["configured_domains"], 1);
+    assert_eq!(status["schema"]["discovered_domains"], 1);
 }
