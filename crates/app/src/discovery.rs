@@ -1,7 +1,7 @@
 use crate::AppGeneric;
 use any_cal_anytype_adapter::{
     AnytypeDiscoveryTransport, AnytypeTransport, DiscoveredMember, DiscoveredProperty,
-    DiscoveredTag, DiscoveredType, DiscoveredView, Page, TransportError,
+    DiscoveredSpace, DiscoveredTag, DiscoveredType, DiscoveredView, Page, TransportError,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -12,6 +12,7 @@ const MAX_DISCOVERY_RECORDS: usize = 10_000;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiscoveryError {
     UnknownDomain,
+    SpaceNotAccessible,
     Transport(TransportError),
     LimitExceeded,
     InvalidPagination,
@@ -47,6 +48,7 @@ pub struct SpaceDiscoverySnapshot {
     pub space_id: String,
     pub binding_fingerprint: String,
     pub schema_profile: String,
+    pub space: DiscoveredSpace,
     pub stable_api_version: String,
     pub body_only_available: bool,
     pub schema_ready: bool,
@@ -80,6 +82,15 @@ where
             .binding
             .binding_fingerprint
             .clone();
+
+        let spaces = collect_pages(|offset| {
+            self.registry
+                .with_transport_mut(|transport| transport.list_spaces(offset))
+        })?;
+        let space = spaces
+            .into_iter()
+            .find(|candidate| candidate.id == space_id)
+            .ok_or(DiscoveryError::SpaceNotAccessible)?;
 
         let mut types = collect_pages(|offset| {
             self.registry
@@ -130,6 +141,7 @@ where
             space_id,
             binding_fingerprint,
             schema_profile,
+            space,
             stable_api_version: any_cal_anytype_adapter::API_VERSION.to_owned(),
             body_only_available: true,
             schema_ready,
