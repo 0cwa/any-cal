@@ -125,7 +125,7 @@ where
             .iter()
             .all(|diagnostic| diagnostic.state == RequirementState::Present);
 
-        Ok(SpaceDiscoverySnapshot {
+        let snapshot = SpaceDiscoverySnapshot {
             domain_id: domain_id.to_owned(),
             space_id,
             binding_fingerprint,
@@ -138,7 +138,14 @@ where
             members,
             tags_by_property_id,
             diagnostics,
-        })
+        };
+        self.discovery_snapshots
+            .insert(domain_id.to_owned(), snapshot.clone());
+        Ok(snapshot)
+    }
+
+    pub fn discovery_snapshot(&self, domain_id: &str) -> Option<&SpaceDiscoverySnapshot> {
+        self.discovery_snapshots.get(domain_id)
     }
 
     /// Discover views for a list that is already known inside the configured
