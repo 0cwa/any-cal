@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 struct DiscoveryTransport {
     inner: FakeAnytypeTransport,
     discovered_spaces: Vec<String>,
+    space_accessible: bool,
 }
 
 impl DiscoveryTransport {
@@ -19,6 +20,7 @@ impl DiscoveryTransport {
         Self {
             inner: FakeAnytypeTransport::new(100),
             discovered_spaces: Vec::new(),
+            space_accessible: true,
         }
     }
 }
@@ -71,11 +73,15 @@ impl AnytypeDiscoveryTransport for DiscoveryTransport {
         _offset: Option<&str>,
     ) -> Result<Page<DiscoveredSpace>, TransportError> {
         Ok(Page {
-            data: vec![DiscoveredSpace {
-                id: "space-a".into(),
-                name: "Personal".into(),
-                extra: BTreeMap::new(),
-            }],
+            data: self
+                .space_accessible
+                .then(|| DiscoveredSpace {
+                    id: "space-a".into(),
+                    name: "Personal".into(),
+                    extra: BTreeMap::new(),
+                })
+                .into_iter()
+                .collect(),
             next_offset: None,
         })
     }
@@ -229,10 +235,27 @@ fn config() -> AppConfig {
 fn capability_discovery_is_binding_scoped_read_only_and_non_authoritative() {
     let mut app = AppWithTransport::with_transport(config(), DiscoveryTransport::new()).unwrap();
 
+    let before = app.handle(Request {
+        method: "GET".into(),
+        path: "/status".into(),
+        headers: vec![],
+        body: vec![],
+    });
+    let before: serde_json::Value = serde_json::from_slice(&before.body).unwrap();
+    assert_eq!(before["schema"]["status"], "not_discovered");
+    assert_eq!(before["schema"]["ready"], false);
+    assert_eq!(before["schema"]["configured_domains"], 1);
+    assert_eq!(before["schema"]["discovered_domains"], 0);
+
     let snapshot = app.discover_domain_capabilities("personal").unwrap();
     assert_eq!(snapshot.domain_id, "personal");
     assert_eq!(snapshot.space_id, "space-a");
     assert_eq!(snapshot.schema_profile, "default");
+    assert_eq!(
+        app.discovery_snapshot("personal")
+            .map(|snapshot| snapshot.binding_fingerprint.as_str()),
+        Some(snapshot.binding_fingerprint.as_str())
+    );
     assert!(snapshot.body_only_available);
     assert!(!snapshot.schema_ready);
     assert_eq!(snapshot.members[0].role, "Viewer");
@@ -298,4 +321,23 @@ fn capability_discovery_is_binding_scoped_read_only_and_non_authoritative() {
     assert_eq!(status["schema"]["body_only_available"], true);
     assert_eq!(status["schema"]["configured_domains"], 1);
     assert_eq!(status["schema"]["discovered_domains"], 1);
+
+    // Losing access invalidates the prior current-binding snapshot rather than
+    // continuing to report stale schema readiness.
+    app.with_transport_mut(|transport| transport.space_accessible = false);
+    assert_eq!(
+        app.discover_domain_capabilities("personal").unwrap_err(),
+        DiscoveryError::SpaceNotAccessible
+    );
+    assert!(app.discovery_snapshot("personal").is_none());
+    let status = app.handle(Request {
+        method: "GET".into(),
+        path: "/status".into(),
+        headers: vec![],
+        body: vec![],
+    });
+    let status: serde_json::Value = serde_json::from_slice(&status.body).unwrap();
+    assert_eq!(status["schema"]["status"], "not_discovered");
+    assert_eq!(status["schema"]["ready"], false);
+    assert_eq!(status["schema"]["discovered_domains"], 0);
 }
