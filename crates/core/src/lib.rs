@@ -1,5 +1,6 @@
 //! Language-neutral data contracts used by the DAV adapters.
 pub mod bridge;
+pub mod composition;
 pub mod domain;
 pub mod envelope;
 pub mod etag;
@@ -15,6 +16,13 @@ pub mod vtodo;
 pub use bridge::{
     BridgeCheckpoint, BridgeContractError, BridgeDecision, BridgeError, BridgeErrorCode,
     BridgeRequest, BridgeResponse, BridgeTombstone, SyncDecision, BRIDGE_SCHEMA_VERSION,
+};
+pub use composition::{
+    apply_destination_mutation, reconcile_source_snapshot, CompositionError, CompositionProfile,
+    DestinationDeletion, DestinationMutation, DestinationMutationResult, FieldOwnership,
+    ForeignObjectRef, MaterializedReference, MergeResult, ProjectionPolicy, RefreshKind,
+    SourceAvailability, SourceSnapshot, COMPOSITION_PROFILE_SCHEMA_VERSION,
+    MATERIALIZED_REFERENCE_SCHEMA_VERSION,
 };
 pub use domain::{
     BindingLifecycle, DavComponent, DavRoute, DomainBinding, DomainBindings, DomainBindingsError,
