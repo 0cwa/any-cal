@@ -1,5 +1,5 @@
 use any_cal_anytype_adapter::{
-    AnytypeTransport, HttpAnytypeTransport, TransportError, API_VERSION,
+    AnytypeDiscovery, AnytypeTransport, HttpAnytypeTransport, TransportError, API_VERSION,
 };
 use any_cal_core::RepositoryError;
 use rcgen::generate_simple_self_signed;
@@ -486,4 +486,105 @@ fn pagination_advances_offsets_deterministically() {
         .list_objects("space", first.next_offset.as_deref())
         .unwrap();
     assert!(second.next_offset.is_none());
+}
+
+
+#[test]
+fn stable_v1_discovery_uses_read_only_space_scoped_endpoints() {
+    let scripted = Scripted {
+        expected: [
+            "GET /v1/spaces/space%20id/types?offset=0&limit=100 HTTP/1.1",
+            "GET /v1/spaces/space%20id/properties?offset=100&limit=100 HTTP/1.1",
+            "GET /v1/spaces/space%20id/members?offset=0&limit=100 HTTP/1.1",
+            "GET /v1/spaces/space%20id/properties/status%2Fproperty/tags?offset=0&limit=100 HTTP/1.1",
+            "GET /v1/spaces/space%20id/lists/list%2Fid/views?offset=0&limit=100 HTTP/1.1",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        responses: [
+            json_response(
+                200,
+                r#"{"data":[{"id":"type-id","key":"task","name":"Task","layout":"task","icon":{"emoji":"✅"}}],"pagination":{"has_more":true,"offset":0,"limit":100,"total":101}}"#,
+            ),
+            json_response(
+                200,
+                r#"{"data":[{"id":"property-id","key":"due-date","name":"Due date","format":"date","object":"property"}],"pagination":{"has_more":false,"offset":100,"limit":100,"total":101}}"#,
+            ),
+            json_response(
+                200,
+                r#"{"data":[{"profile_id":"profile-id","name":"Alice","network_id":"network-id","global_name":"alice.any","status":"active","role":"Viewer"}],"pagination":{"has_more":false,"offset":0,"limit":100,"total":1}}"#,
+            ),
+            json_response(
+                200,
+                r#"{"data":[{"id":"tag-id","key":"in-progress","name":"In progress","color":"yellow","object":"tag"}],"pagination":{"has_more":false,"offset":0,"limit":100,"total":1}}"#,
+            ),
+            json_response(
+                200,
+                r#"{"data":[{"id":"view-id","name":"Today","layout":"table","filters":[{"property_key":"due-date"}],"sorts":[{"property_key":"name"}]}],"pagination":{"has_more":false,"offset":0,"limit":100,"total":1}}"#,
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let mut transport =
+        HttpAnytypeTransport::new("http://host", API_VERSION, Some("secret".into()))
+            .unwrap()
+            .with_exchange(Box::new(scripted));
+
+    let types = transport.list_types("space id", None).unwrap();
+    assert_eq!(types.data[0].id, "type-id");
+    assert_eq!(types.data[0].key, "task");
+    assert_eq!(types.data[0].layout, "task");
+    assert_eq!(types.next_offset.as_deref(), Some("100"));
+
+    let properties = transport
+        .list_properties("space id", types.next_offset.as_deref())
+        .unwrap();
+    assert_eq!(properties.data[0].id, "property-id");
+    assert_eq!(properties.data[0].key, "due-date");
+    assert_eq!(properties.data[0].format, "date");
+    assert!(properties.next_offset.is_none());
+
+    let members = transport.list_members("space id", None).unwrap();
+    assert_eq!(members.data[0].profile_id, "profile-id");
+    assert_eq!(members.data[0].network_id.as_deref(), Some("network-id"));
+    assert_eq!(members.data[0].role, "Viewer");
+    assert_eq!(members.data[0].status, "active");
+
+    let tags = transport
+        .list_tags("space id", "status/property", None)
+        .unwrap();
+    assert_eq!(tags.data[0].id, "tag-id");
+    assert_eq!(tags.data[0].key, "in-progress");
+    assert_eq!(tags.data[0].color, "yellow");
+
+    let views = transport.list_views("space id", "list/id", None).unwrap();
+    assert_eq!(views.data[0].id, "view-id");
+    assert_eq!(views.data[0].layout, "table");
+    assert!(views.data[0].filters.is_array());
+    assert!(views.data[0].sorts.is_array());
+}
+
+#[test]
+fn discovery_rejects_unbounded_or_malformed_offsets_before_http() {
+    let mut transport = HttpAnytypeTransport::new("http://host", API_VERSION, None)
+        .unwrap()
+        .with_exchange(Box::new(FailingExchange));
+    assert!(matches!(
+        transport.list_types("space", Some("next")),
+        Err(TransportError::InvalidRequest(_))
+    ));
+}
+
+#[test]
+fn discovery_rejects_schema_records_without_stable_ids_or_formats() {
+    let body = r#"{"data":[{"id":"property-id","name":"Due date","format":"date"}],"pagination":{"has_more":false,"offset":0,"limit":100,"total":1}}"#;
+    let mut transport = HttpAnytypeTransport::new("http://host", API_VERSION, None)
+        .unwrap()
+        .with_exchange(Box::new(SingleResponse(json_response(200, body))));
+    assert_eq!(
+        transport.list_properties("space", None),
+        Err(TransportError::Malformed)
+    );
 }
