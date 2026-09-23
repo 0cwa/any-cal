@@ -217,7 +217,8 @@ pub struct AppGeneric<T: AnytypeTransport> {
     rate_count: u32,
     identity: Option<IdentityStore>,
     identity_now: i64,
-    discovery_snapshots: BTreeMap<String, crate::discovery::SpaceDiscoverySnapshot>,
+    discovery_snapshots:
+        BTreeMap<crate::discovery::DiscoverySnapshotKey, crate::discovery::SpaceDiscoverySnapshot>,
 }
 impl<T: AnytypeTransport> AppGeneric<T> {
     /// Dispatch directly to the configured primary DAV context. This is a
