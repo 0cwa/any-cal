@@ -532,6 +532,40 @@ pub trait AnytypeTransport {
     ) -> Result<ObjectRecord, TransportError>;
 }
 
+pub trait AnytypeDiscoveryTransport {
+    fn list_spaces(
+        &mut self,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredSpace>, TransportError>;
+    fn list_types(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredType>, TransportError>;
+    fn list_properties(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredProperty>, TransportError>;
+    fn list_members(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredMember>, TransportError>;
+    fn list_tags(
+        &mut self,
+        space_id: &str,
+        property_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredTag>, TransportError>;
+    fn list_views(
+        &mut self,
+        space_id: &str,
+        list_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredView>, TransportError>;
+}
+
 /// Minimal synchronous HTTP transport with platform-verified TLS for HTTPS.
 /// Callers must provide credentials explicitly and this type never includes
 /// them in diagnostics.
@@ -1108,6 +1142,80 @@ impl AnytypeTransport for HttpAnytypeTransport {
             });
         }
         wire::decode_object(&response.body, Some(space))
+    }
+}
+
+impl AnytypeDiscoveryTransport for HttpAnytypeTransport {
+    fn list_spaces(
+        &mut self,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredSpace>, TransportError> {
+        self.discovery_page(paginated_path("/v1/spaces".into(), offset)?)
+    }
+
+    fn list_types(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredType>, TransportError> {
+        self.discovery_page(paginated_path(
+            format!("/v1/spaces/{}/types", encode_path_segment(space_id)),
+            offset,
+        )?)
+    }
+
+    fn list_properties(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredProperty>, TransportError> {
+        self.discovery_page(paginated_path(
+            format!("/v1/spaces/{}/properties", encode_path_segment(space_id)),
+            offset,
+        )?)
+    }
+
+    fn list_members(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredMember>, TransportError> {
+        self.discovery_page(paginated_path(
+            format!("/v1/spaces/{}/members", encode_path_segment(space_id)),
+            offset,
+        )?)
+    }
+
+    fn list_tags(
+        &mut self,
+        space_id: &str,
+        property_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredTag>, TransportError> {
+        self.discovery_page(paginated_path(
+            format!(
+                "/v1/spaces/{}/properties/{}/tags",
+                encode_path_segment(space_id),
+                encode_path_segment(property_id)
+            ),
+            offset,
+        )?)
+    }
+
+    fn list_views(
+        &mut self,
+        space_id: &str,
+        list_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredView>, TransportError> {
+        self.discovery_page(paginated_path(
+            format!(
+                "/v1/spaces/{}/lists/{}/views",
+                encode_path_segment(space_id),
+                encode_path_segment(list_id)
+            ),
+            offset,
+        )?)
     }
 }
 
