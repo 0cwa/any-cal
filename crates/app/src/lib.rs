@@ -1,19 +1,16 @@
-use any_cal_anytype_adapter::{
-    AnytypeRepository, AnytypeTransport, FakeAnytypeTransport, RepositoryBinding,
-};
+use any_cal_anytype_adapter::{AnytypeTransport, FakeAnytypeTransport};
 use any_cal_core::{
     BridgeCheckpoint, BridgeDecision, BridgeError, BridgeErrorCode, BridgeRequest, BridgeResponse,
-    BridgeTombstone, Collection, CollectionId, DavKind, DavRoute, DomainBinding, DomainBindings,
-    DomainCollection, MemoryRepository, Repository, RepositoryError, ResourceEnvelope,
-    SyncDecision, WriteCondition, BRIDGE_SCHEMA_VERSION,
+    BridgeTombstone, Collection, CollectionId, DavKind, DavRoute, DomainBinding, DomainCollection,
+    MemoryRepository, Repository, RepositoryError, ResourceEnvelope, SyncDecision, WriteCondition,
+    BRIDGE_SCHEMA_VERSION,
 };
-use any_cal_dav_server::DavServer;
 use any_cal_observability::{
     AuditEventWriter, AuditHealthState, Correlation, ErrorCategory, Event, EventBuffer, Health,
     ReconciliationReport,
 };
 use any_cal_sync::{CommitFault, ObservedResource, SyncState, SyncStore};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
@@ -23,11 +20,13 @@ use serde::Serialize;
 
 mod admin;
 mod config;
+mod domain_registry;
 mod http;
 pub mod identity;
 
 pub use config::{parse_cli, AppConfig, ConfigError};
 
+use crate::domain_registry::DomainRepositoryRegistry;
 use crate::http::{connection_requests_close, read_http_request, write_http};
 use crate::identity::{
     AccessDecision, AuthOutcome, Capability, CollectionKind, IdentityStore, Operation,
@@ -201,20 +200,10 @@ fn classify_audit_error(error: io::Error) -> String {
     format!("audit initialization failed ({class})")
 }
 
-struct RepositoryContext {
-    binding: RepositoryBinding,
-    cache: MemoryRepository,
-    contacts: CollectionId,
-    tasks: CollectionId,
-}
-
 pub struct AppGeneric<T: AnytypeTransport> {
     pub config: AppConfig,
-    pub server: DavServer<AnytypeRepository<T>>,
     transport_mode: &'static str,
-    bindings: DomainBindings,
-    repository_contexts: BTreeMap<String, RepositoryContext>,
-    active_domain_id: String,
+    registry: DomainRepositoryRegistry<T>,
     upstream: UpstreamState,
     sync: Option<SyncStore>,
     pub events: EventBuffer,
@@ -229,6 +218,57 @@ pub struct AppGeneric<T: AnytypeTransport> {
     identity_now: i64,
 }
 impl<T: AnytypeTransport> AppGeneric<T> {
+    /// Dispatch directly to the configured primary DAV context. This is a
+    /// protocol-test seam; normal application routing should use [`Self::handle`].
+    pub fn handle_primary_dav(
+        &mut self,
+        request: any_cal_dav_server::Request,
+    ) -> any_cal_dav_server::Response {
+        self.registry.primary_mut().server.handle(request)
+    }
+
+    /// Return a snapshot of the underlying transport for deterministic tests
+    /// and diagnostics without exposing a mutable process-global active domain.
+    pub fn transport_snapshot(&self) -> T
+    where
+        T: Clone,
+    {
+        self.registry.transport_snapshot()
+    }
+
+    /// Execute a bounded operation against the shared transport. Domain
+    /// selection still happens through repository contexts; this seam exists
+    /// for transport fault injection and diagnostics.
+    pub fn with_transport_mut<R>(&self, operation: impl FnOnce(&mut T) -> R) -> R {
+        self.registry.with_transport_mut(operation)
+    }
+
+    /// Inspect repository metrics for one configured domain.
+    pub fn repository_metrics(
+        &self,
+        domain_id: &str,
+    ) -> Option<&any_cal_anytype_adapter::OperationMetrics> {
+        self.registry
+            .context(domain_id)
+            .map(|context| &context.server.repository.metrics)
+    }
+
+    /// Explicit domain-qualified repository mutation seam used by recovery
+    /// and isolation tests. The domain must already exist in configuration.
+    pub fn delete_resource_in_domain(
+        &mut self,
+        domain_id: &str,
+        resource_id: &any_cal_core::ResourceId,
+        condition: WriteCondition,
+    ) -> Option<Result<any_cal_core::StoredResource, RepositoryError>> {
+        self.registry.context_mut(domain_id).map(|context| {
+            context
+                .server
+                .repository
+                .delete_resource(resource_id, condition)
+        })
+    }
+
     /// Attach an in-memory identity/ACL policy for a bounded service instance.
     /// Persistent credential lifecycle and clock selection remain outside this
     /// constructor; callers must provide the synthetic/validated clock value.
@@ -311,7 +351,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             return self.handle_sync_admin(request, correlation);
         }
         if request.path == "/android/sync" {
-            if self.bindings.bindings.len() > 1 {
+            if self.registry.len() > 1 {
                 let mut headers = vec![("Content-Type".into(), "application/json".into())];
                 no_store(&mut headers);
                 add_correlation(&mut headers, &correlation);
@@ -413,7 +453,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                 ""
             };
             let upstream_json = self.upstream_json();
-            let space_configured = !self.bindings.bindings.is_empty();
+            let space_configured = !self.registry.is_empty();
             let contacts_configured = self.has_collection_route(DomainCollection::Contacts);
             let tasks_configured = self.has_collection_route(DomainCollection::Tasks);
             let body = format!("{{\"status\":\"{service_state}\",\"ready\":{service_ready},\"space_configured\":{},\"contacts_collection_configured\":{},\"tasks_collection_configured\":{},\"transport\":\"{}\",\"upstream\":{},\"cache\":\"rebuildable\",\"events\":{},\"failures\":{},\"last_error\":{},\"recovery\":\"sync-checkpoint\"{}{}{} }}", space_configured, contacts_configured, tasks_configured, self.transport_mode, upstream_json, self.health.counters.events, self.health.counters.failures, last_error, sync_export_json, separator, audit_json);
@@ -436,7 +476,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         let durable = matches!(method.as_str(), "PUT" | "DELETE");
         let route_domain = self
             .resolve_request_route(&request.path)
-            .map(|(binding, _)| binding.domain_id.clone());
+            .map(|(domain_id, _)| domain_id.to_owned());
         let collection_home = matches!(request.path.as_str(), "/carddav/" | "/caldav/");
         if (request.path.starts_with("/carddav/") || request.path.starts_with("/caldav/"))
             && !collection_home
@@ -448,16 +488,18 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                 body: b"not found".to_vec(),
             };
         }
-        if let Some(domain_id) = route_domain {
-            if self.activate_domain(&domain_id).is_err() {
+        let mut response = if let Some(domain_id) = route_domain {
+            let Some(context) = self.registry.context_mut(&domain_id) else {
                 return any_cal_dav_server::Response {
                     status: 500,
                     headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
                     body: b"binding context unavailable".to_vec(),
                 };
-            }
-        }
-        let mut response = self.server.handle(request);
+            };
+            context.server.handle(request)
+        } else {
+            self.registry.primary_mut().server.handle(request)
+        };
         if options_write_allowed == Some(false) {
             filter_write_methods(&mut response);
         }
@@ -571,11 +613,16 @@ impl<T: AnytypeTransport> AppGeneric<T> {
 
     fn android_collection(&self, authority: &str) -> Option<(CollectionId, DavKind)> {
         match authority {
-            "com.android.contacts" => Some((self.server.contacts.clone(), DavKind::Contact)),
+            "com.android.contacts" => Some((
+                self.registry.primary().server.contacts.clone(),
+                DavKind::Contact,
+            )),
             // CalendarContract has no separate Anytype collection in the
             // current configuration. Events share the configured CalDAV
             // collection with VTODOs and are filtered by kind here.
-            "com.android.calendar" => Some((self.server.tasks.clone(), DavKind::Event)),
+            "com.android.calendar" => {
+                Some((self.registry.primary().server.tasks.clone(), DavKind::Event))
+            }
             _ => None,
         }
     }
@@ -587,7 +634,13 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         expected_kind: DavKind,
         correlation: Correlation,
     ) -> any_cal_dav_server::Response {
-        let rows = match self.server.repository.list_resources(&collection, true) {
+        let rows = match self
+            .registry
+            .primary_mut()
+            .server
+            .repository
+            .list_resources(&collection, true)
+        {
             Ok(rows) => rows,
             Err(error) => {
                 let (status, code, message) = android_repository_error(&error);
@@ -665,7 +718,13 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         // Resolve identities before any write. This both makes retries
         // deterministic and ensures an unavailable/read-failed repository
         // cannot be mistaken for an empty state that authorizes tombstones.
-        let rows = match self.server.repository.list_resources(&collection, true) {
+        let rows = match self
+            .registry
+            .primary_mut()
+            .server
+            .repository
+            .list_resources(&collection, true)
+        {
             Ok(rows) => rows,
             Err(error) => {
                 let (status, code, message) = android_repository_error(&error);
@@ -705,6 +764,8 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                 candidate.anytype_object_id = existing.envelope.anytype_object_id.clone();
                 candidate.dav_uid = existing.envelope.dav_uid.clone();
                 match self
+                    .registry
+                    .primary_mut()
                     .server
                     .repository
                     .update_resource(candidate, WriteCondition::Unconditional)
@@ -723,6 +784,8 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                 }
             } else {
                 match self
+                    .registry
+                    .primary_mut()
                     .server
                     .repository
                     .create_resource(candidate, WriteCondition::IfNoneMatch)
@@ -768,10 +831,15 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                     });
                     continue;
                 }
-                let stored = match self.server.repository.archive_resource(
-                    &existing.envelope.resource_id,
-                    WriteCondition::Unconditional,
-                ) {
+                let stored = match self
+                    .registry
+                    .primary_mut()
+                    .server
+                    .repository
+                    .archive_resource(
+                        &existing.envelope.resource_id,
+                        WriteCondition::Unconditional,
+                    ) {
                     Ok(stored) => stored,
                     Err(error) => {
                         let (status, code, message) = android_repository_error(&error);
@@ -871,33 +939,8 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             .first()
             .cloned()
             .ok_or_else(|| ConfigError::Invalid("no domain bindings configured".into()))?;
-        let active_domain_id = active_binding.domain_id.clone();
-        let (contacts, tasks) = binding_collection_ids(&active_binding)?;
-        let repository_binding = config.repository_binding_for(&active_binding, transport_mode)?;
-        let mut server = DavServer {
-            repository: AnytypeRepository::with_binding(transport, repository_binding),
-            contacts: contacts.clone(),
-            tasks: tasks.clone(),
-        };
-        ensure_collection(&mut server.repository.cache, contacts, "Contacts")?;
-        ensure_collection(&mut server.repository.cache, tasks, "Tasks")?;
-
-        let mut repository_contexts = BTreeMap::new();
-        for binding in bindings.bindings.iter().skip(1) {
-            let (contacts, tasks) = binding_collection_ids(binding)?;
-            let mut cache = MemoryRepository::new();
-            ensure_collection(&mut cache, contacts.clone(), "Contacts")?;
-            ensure_collection(&mut cache, tasks.clone(), "Tasks")?;
-            repository_contexts.insert(
-                binding.domain_id.clone(),
-                RepositoryContext {
-                    binding: config.repository_binding_for(binding, transport_mode)?,
-                    cache,
-                    contacts,
-                    tasks,
-                },
-            );
-        }
+        let registry =
+            DomainRepositoryRegistry::new(&config, &bindings, transport, transport_mode)?;
 
         let sync = if let Some(path) = config.sync_checkpoint.as_deref() {
             let scope = config.sync_scope_for(&active_binding, transport_mode)?;
@@ -917,12 +960,9 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             })
             .transpose()?;
         Ok(Self {
-            server,
             config,
             transport_mode,
-            bindings,
-            repository_contexts,
-            active_domain_id,
+            registry,
             upstream: if transport_mode == "fake" {
                 UpstreamState::Ready
             } else {
@@ -1084,43 +1124,14 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         Some((collection, resource_id, operation))
     }
 
-    fn resolve_request_route(&self, path: &str) -> Option<(&DomainBinding, &DavRoute)> {
-        self.bindings.bindings.iter().find_map(|binding| {
-            binding.routes.iter().find_map(|route| {
-                let exact = path == route.path;
-                let descendant = path
-                    .strip_prefix(&route.path)
-                    .is_some_and(|remainder| remainder.starts_with('/'));
-                (exact || descendant).then_some((binding, route))
-            })
-        })
+    fn resolve_request_route(&self, path: &str) -> Option<(&str, &DavRoute)> {
+        self.registry
+            .resolve_route(path)
+            .map(|(context, route)| (context.binding.domain_id.as_str(), route))
     }
 
     fn has_collection_route(&self, collection: DomainCollection) -> bool {
-        self.bindings
-            .bindings
-            .iter()
-            .flat_map(|binding| binding.routes.iter())
-            .any(|route| route.collection == collection)
-    }
-
-    fn activate_domain(&mut self, domain_id: &str) -> Result<(), ConfigError> {
-        if self.active_domain_id == domain_id {
-            return Ok(());
-        }
-        let target = self
-            .repository_contexts
-            .remove(domain_id)
-            .ok_or_else(|| ConfigError::Invalid("unknown repository binding context".into()))?;
-        let current = RepositoryContext {
-            binding: std::mem::replace(&mut self.server.repository.binding, target.binding),
-            cache: std::mem::replace(&mut self.server.repository.cache, target.cache),
-            contacts: std::mem::replace(&mut self.server.contacts, target.contacts),
-            tasks: std::mem::replace(&mut self.server.tasks, target.tasks),
-        };
-        let previous_domain = std::mem::replace(&mut self.active_domain_id, domain_id.to_owned());
-        self.repository_contexts.insert(previous_domain, current);
-        Ok(())
+        self.registry.has_collection_route(collection)
     }
 
     fn authorized(&self, request: &any_cal_dav_server::Request) -> bool {
@@ -1177,9 +1188,14 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             return Ok(());
         };
         let mut rows = Vec::new();
-        for collection in [self.server.contacts.clone(), self.server.tasks.clone()] {
+        let primary = self.registry.primary_mut();
+        for collection in [
+            primary.server.contacts.clone(),
+            primary.server.tasks.clone(),
+        ] {
             rows.extend(
-                self.server
+                primary
+                    .server
                     .repository
                     .list_resources(&collection, false)
                     .or_else(|error| match error {
@@ -1279,19 +1295,12 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             self.upstream = UpstreamState::Ready;
             return;
         }
-        let spaces = self
-            .bindings
-            .bindings
-            .iter()
-            .map(|binding| binding.space_id.clone())
-            .collect::<BTreeSet<_>>();
+        let spaces = self.registry.space_ids();
         for space_id in spaces {
-            if let Err(error) = self
-                .server
-                .repository
-                .transport
-                .list_objects(&space_id, None)
-            {
+            let result = self
+                .registry
+                .with_transport_mut(|transport| transport.list_objects(&space_id, None));
+            if let Err(error) = result {
                 self.upstream = UpstreamState::Unavailable(error.category());
                 return;
             }
@@ -1300,8 +1309,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
     }
 
     fn upstream_json(&self) -> String {
-        let configured =
-            !self.config.endpoint.trim().is_empty() && !self.bindings.bindings.is_empty();
+        let configured = !self.config.endpoint.trim().is_empty() && !self.registry.is_empty();
         let error = self
             .upstream
             .error()
@@ -1366,7 +1374,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             "ok endpoint={} api_version={} space_configured={} listen_address={} token_configured={} transport={} upstream_tested={} auth_audit_enabled={} max_connections={}",
             redact_endpoint(&self.config.endpoint),
             self.config.api_version,
-            !self.bindings.bindings.is_empty(),
+            !self.registry.is_empty(),
             self.config.listen_address,
             self.config.token.is_some(),
             self.transport_mode,
