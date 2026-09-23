@@ -26,7 +26,7 @@ pub mod identity;
 
 pub use config::{parse_cli, AppConfig, ConfigError};
 
-use crate::domain_registry::DomainRepositoryRegistry;
+use crate::domain_registry::{BindingSuspension, DomainRepositoryRegistry, UpstreamCapability};
 use crate::http::{connection_requests_close, read_http_request, write_http};
 use crate::identity::{
     AccessDecision, AuthOutcome, Capability, CollectionKind, IdentityStore, Operation,
@@ -269,6 +269,60 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         })
     }
 
+    /// Return the immutable identity that capability discovery and
+    /// reauthorization must match before changing a domain's upstream state.
+    pub fn upstream_binding_identity(&self, domain_id: &str) -> Option<(String, String, String)> {
+        self.registry
+            .binding_identity(domain_id)
+            .map(|(binding, account, space)| {
+                (binding.to_owned(), account.to_owned(), space.to_owned())
+            })
+    }
+
+    /// Install capability discovery results only when they belong to the
+    /// exact configured binding fingerprint.
+    pub fn configure_upstream_capabilities(
+        &mut self,
+        domain_id: &str,
+        binding_fingerprint: &str,
+        read: bool,
+        write: bool,
+    ) -> bool {
+        self.registry
+            .configure_upstream_capabilities(domain_id, binding_fingerprint, read, write)
+    }
+
+    /// Clear an authorization suspension only after the exact configured
+    /// upstream account context and Space have been revalidated.
+    pub fn reauthorize_upstream_domain(
+        &mut self,
+        domain_id: &str,
+        upstream_account_fingerprint: &str,
+        space_id: &str,
+    ) -> bool {
+        self.registry
+            .reauthorize(domain_id, upstream_account_fingerprint, space_id)
+    }
+
+    /// Bounded diagnostic view; no token, endpoint, or raw credential data is exposed.
+    pub fn upstream_binding_status(
+        &self,
+        domain_id: &str,
+    ) -> Option<(&'static str, &'static str, &'static str)> {
+        let state = self.registry.upstream_state(domain_id)?;
+        let capability = |value| match value {
+            UpstreamCapability::Unknown => "unknown",
+            UpstreamCapability::Allowed => "allowed",
+            UpstreamCapability::Denied => "denied",
+        };
+        let suspension = match state.suspension {
+            BindingSuspension::Active => "active",
+            BindingSuspension::Auth => "auth",
+            BindingSuspension::Forbidden => "forbidden",
+        };
+        Some((capability(state.read), capability(state.write), suspension))
+    }
+
     /// Attach an in-memory identity/ACL policy for a bounded service instance.
     /// Persistent credential lifecycle and clock selection remain outside this
     /// constructor; callers must provide the synthetic/validated clock value.
@@ -470,13 +524,20 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         }
         let method = request.method.clone();
         let options_request = method.eq_ignore_ascii_case("OPTIONS");
-        let options_write_allowed = options_request
+        let mut options_write_allowed = options_request
             .then(|| self.options_write_allowed(&request))
             .flatten();
         let durable = matches!(method.as_str(), "PUT" | "DELETE");
         let route_domain = self
             .resolve_request_route(&request.path)
             .map(|(domain_id, _)| domain_id.to_owned());
+        if options_request
+            && route_domain.as_deref().is_some_and(|domain_id| {
+                self.registry.upstream_preflight(domain_id, true).is_some()
+            })
+        {
+            options_write_allowed = Some(false);
+        }
         let collection_home = matches!(request.path.as_str(), "/carddav/" | "/caldav/");
         if (request.path.starts_with("/carddav/") || request.path.starts_with("/caldav/"))
             && !collection_home
@@ -488,18 +549,37 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                 body: b"not found".to_vec(),
             };
         }
-        let mut response = if let Some(domain_id) = route_domain {
-            let Some(context) = self.registry.context_mut(&domain_id) else {
-                return any_cal_dav_server::Response {
-                    status: 500,
+        let mut upstream_observation = None;
+        let mut response = if let Some(domain_id) = route_domain.as_deref() {
+            if let Some(status) = self.registry.upstream_preflight(domain_id, durable) {
+                any_cal_dav_server::Response {
+                    status,
                     headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
-                    body: b"binding context unavailable".to_vec(),
+                    body: if status == 401 {
+                        b"upstream authorization required".to_vec()
+                    } else {
+                        b"upstream access denied".to_vec()
+                    },
+                }
+            } else {
+                let Some(context) = self.registry.context_mut(domain_id) else {
+                    return any_cal_dav_server::Response {
+                        status: 500,
+                        headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                        body: b"binding context unavailable".to_vec(),
+                    };
                 };
-            };
-            context.server.handle(request)
+                let response = context.server.handle(request);
+                upstream_observation = Some((domain_id.to_owned(), durable, response.status));
+                response
+            }
         } else {
             self.registry.primary_mut().server.handle(request)
         };
+        if let Some((domain_id, write, status)) = upstream_observation {
+            self.registry
+                .observe_upstream_response(&domain_id, write, status);
+        }
         if options_write_allowed == Some(false) {
             filter_write_methods(&mut response);
         }
