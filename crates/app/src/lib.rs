@@ -1,8 +1,11 @@
-use any_cal_anytype_adapter::{AnytypeRepository, AnytypeTransport, FakeAnytypeTransport};
+use any_cal_anytype_adapter::{
+    AnytypeRepository, AnytypeTransport, FakeAnytypeTransport, RepositoryBinding,
+};
 use any_cal_core::{
     BridgeCheckpoint, BridgeDecision, BridgeError, BridgeErrorCode, BridgeRequest, BridgeResponse,
-    BridgeTombstone, Collection, CollectionId, DavKind, Repository, RepositoryError,
-    ResourceEnvelope, SyncDecision, WriteCondition, BRIDGE_SCHEMA_VERSION,
+    BridgeTombstone, Collection, CollectionId, DavKind, DavRoute, DomainBinding, DomainBindings,
+    DomainCollection, MemoryRepository, Repository, RepositoryError, ResourceEnvelope,
+    SyncDecision, WriteCondition, BRIDGE_SCHEMA_VERSION,
 };
 use any_cal_dav_server::DavServer;
 use any_cal_observability::{
@@ -10,7 +13,7 @@ use any_cal_observability::{
     ReconciliationReport,
 };
 use any_cal_sync::{CommitFault, ObservedResource, SyncState, SyncStore};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
@@ -143,6 +146,50 @@ struct AndroidSyncResponse {
     tombstones: Vec<AndroidSyncTombstone>,
 }
 
+fn binding_collection_ids(
+    binding: &DomainBinding,
+) -> Result<(CollectionId, CollectionId), ConfigError> {
+    let mut contacts = CollectionId::try_from("contacts").expect("default contacts id is valid");
+    let mut tasks = CollectionId::try_from("tasks").expect("default tasks id is valid");
+    for route in &binding.routes {
+        let collection = route
+            .path
+            .rsplit('/')
+            .next()
+            .ok_or_else(|| ConfigError::Invalid("DAV route has no collection id".into()))?;
+        match route.collection {
+            DomainCollection::Contacts => {
+                contacts = CollectionId::try_from(collection)
+                    .map_err(|_| ConfigError::Invalid("invalid contacts route".into()))?;
+            }
+            DomainCollection::Tasks => {
+                tasks = CollectionId::try_from(collection)
+                    .map_err(|_| ConfigError::Invalid("invalid tasks route".into()))?;
+            }
+            DomainCollection::Events => {
+                return Err(ConfigError::Invalid(
+                    "event routes are not supported by the current DAV runtime".into(),
+                ))
+            }
+        }
+    }
+    Ok((contacts, tasks))
+}
+
+fn ensure_collection(
+    repository: &mut MemoryRepository,
+    id: CollectionId,
+    name: &str,
+) -> Result<(), ConfigError> {
+    match repository.create_collection(Collection {
+        id,
+        name: name.into(),
+    }) {
+        Ok(()) | Err(RepositoryError::CollectionAlreadyExists(_)) => Ok(()),
+        Err(error) => Err(ConfigError::Repository(error.to_string())),
+    }
+}
+
 fn classify_audit_error(error: io::Error) -> String {
     let class = match error.kind() {
         io::ErrorKind::PermissionDenied => "permission",
@@ -154,10 +201,20 @@ fn classify_audit_error(error: io::Error) -> String {
     format!("audit initialization failed ({class})")
 }
 
+struct RepositoryContext {
+    binding: RepositoryBinding,
+    cache: MemoryRepository,
+    contacts: CollectionId,
+    tasks: CollectionId,
+}
+
 pub struct AppGeneric<T: AnytypeTransport> {
     pub config: AppConfig,
     pub server: DavServer<AnytypeRepository<T>>,
     transport_mode: &'static str,
+    bindings: DomainBindings,
+    repository_contexts: BTreeMap<String, RepositoryContext>,
+    active_domain_id: String,
     upstream: UpstreamState,
     sync: Option<SyncStore>,
     pub events: EventBuffer,
@@ -254,6 +311,16 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             return self.handle_sync_admin(request, correlation);
         }
         if request.path == "/android/sync" {
+            if self.bindings.bindings.len() > 1 {
+                let mut headers = vec![("Content-Type".into(), "application/json".into())];
+                no_store(&mut headers);
+                add_correlation(&mut headers, &correlation);
+                return any_cal_dav_server::Response {
+                    status: 409,
+                    headers,
+                    body: b"{\"status\":\"error\",\"error\":\"domain_required\"}".to_vec(),
+                };
+            }
             if !request.method.eq_ignore_ascii_case("POST") {
                 let mut headers = vec![
                     ("Content-Type".into(), "application/json".into()),
@@ -346,7 +413,10 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                 ""
             };
             let upstream_json = self.upstream_json();
-            let body = format!("{{\"status\":\"{service_state}\",\"ready\":{service_ready},\"space_configured\":{},\"contacts_collection_configured\":{},\"tasks_collection_configured\":{},\"transport\":\"{}\",\"upstream\":{},\"cache\":\"rebuildable\",\"events\":{},\"failures\":{},\"last_error\":{},\"recovery\":\"sync-checkpoint\"{}{}{} }}", !self.config.space_id.trim().is_empty(), !self.config.contacts_collection.trim().is_empty(), !self.config.tasks_collection.trim().is_empty(), self.transport_mode, upstream_json, self.health.counters.events, self.health.counters.failures, last_error, sync_export_json, separator, audit_json);
+            let space_configured = !self.bindings.bindings.is_empty();
+            let contacts_configured = self.has_collection_route(DomainCollection::Contacts);
+            let tasks_configured = self.has_collection_route(DomainCollection::Tasks);
+            let body = format!("{{\"status\":\"{service_state}\",\"ready\":{service_ready},\"space_configured\":{},\"contacts_collection_configured\":{},\"tasks_collection_configured\":{},\"transport\":\"{}\",\"upstream\":{},\"cache\":\"rebuildable\",\"events\":{},\"failures\":{},\"last_error\":{},\"recovery\":\"sync-checkpoint\"{}{}{} }}", space_configured, contacts_configured, tasks_configured, self.transport_mode, upstream_json, self.health.counters.events, self.health.counters.failures, last_error, sync_export_json, separator, audit_json);
             self.health.record(true, 0, None);
             self.events
                 .push(correlation.event("health", None, "health check"));
@@ -364,6 +434,29 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             .then(|| self.options_write_allowed(&request))
             .flatten();
         let durable = matches!(method.as_str(), "PUT" | "DELETE");
+        let route_domain = self
+            .resolve_request_route(&request.path)
+            .map(|(binding, _)| binding.domain_id.clone());
+        let collection_home = matches!(request.path.as_str(), "/carddav/" | "/caldav/");
+        if (request.path.starts_with("/carddav/") || request.path.starts_with("/caldav/"))
+            && !collection_home
+            && route_domain.is_none()
+        {
+            return any_cal_dav_server::Response {
+                status: 404,
+                headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                body: b"not found".to_vec(),
+            };
+        }
+        if let Some(domain_id) = route_domain {
+            if self.activate_domain(&domain_id).is_err() {
+                return any_cal_dav_server::Response {
+                    status: 500,
+                    headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+                    body: b"binding context unavailable".to_vec(),
+                };
+            }
+        }
         let mut response = self.server.handle(request);
         if options_write_allowed == Some(false) {
             filter_write_methods(&mut response);
@@ -772,31 +865,42 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         transport_mode: &'static str,
     ) -> Result<Self, ConfigError> {
         config.validate()?;
-        let contacts = CollectionId::try_from(config.contacts_collection.as_str()).unwrap();
-        let tasks = CollectionId::try_from(config.tasks_collection.as_str()).unwrap();
-        let repository_binding = config.repository_binding(transport_mode)?;
-        let mut server = DavServer::new(AnytypeRepository::with_binding(
-            transport,
-            repository_binding,
-        ));
-        server.contacts = contacts.clone();
-        server.tasks = tasks.clone();
-        match server.repository.create_collection(Collection {
-            id: contacts,
-            name: "Contacts".into(),
-        }) {
-            Ok(()) | Err(any_cal_core::RepositoryError::CollectionAlreadyExists(_)) => {}
-            Err(error) => return Err(ConfigError::Repository(error.to_string())),
+        let bindings = config.domain_bindings()?;
+        let active_binding = bindings
+            .bindings
+            .first()
+            .cloned()
+            .ok_or_else(|| ConfigError::Invalid("no domain bindings configured".into()))?;
+        let active_domain_id = active_binding.domain_id.clone();
+        let (contacts, tasks) = binding_collection_ids(&active_binding)?;
+        let repository_binding = config.repository_binding_for(&active_binding, transport_mode)?;
+        let mut server = DavServer {
+            repository: AnytypeRepository::with_binding(transport, repository_binding),
+            contacts: contacts.clone(),
+            tasks: tasks.clone(),
+        };
+        ensure_collection(&mut server.repository.cache, contacts, "Contacts")?;
+        ensure_collection(&mut server.repository.cache, tasks, "Tasks")?;
+
+        let mut repository_contexts = BTreeMap::new();
+        for binding in bindings.bindings.iter().skip(1) {
+            let (contacts, tasks) = binding_collection_ids(binding)?;
+            let mut cache = MemoryRepository::new();
+            ensure_collection(&mut cache, contacts.clone(), "Contacts")?;
+            ensure_collection(&mut cache, tasks.clone(), "Tasks")?;
+            repository_contexts.insert(
+                binding.domain_id.clone(),
+                RepositoryContext {
+                    binding: config.repository_binding_for(binding, transport_mode)?,
+                    cache,
+                    contacts,
+                    tasks,
+                },
+            );
         }
-        match server.repository.create_collection(Collection {
-            id: tasks,
-            name: "Tasks".into(),
-        }) {
-            Ok(()) | Err(any_cal_core::RepositoryError::CollectionAlreadyExists(_)) => {}
-            Err(error) => return Err(ConfigError::Repository(error.to_string())),
-        }
+
         let sync = if let Some(path) = config.sync_checkpoint.as_deref() {
-            let scope = config.sync_scope(transport_mode)?;
+            let scope = config.sync_scope_for(&active_binding, transport_mode)?;
             Some(
                 SyncStore::open_scoped(path, scope)
                     .map_err(|error| ConfigError::Io(error.to_string()))?,
@@ -816,6 +920,9 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             server,
             config,
             transport_mode,
+            bindings,
+            repository_contexts,
+            active_domain_id,
             upstream: if transport_mode == "fake" {
                 UpstreamState::Ready
             } else {
@@ -959,19 +1066,13 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         &self,
         request: &any_cal_dav_server::Request,
     ) -> Option<(CollectionKind, Option<String>, Operation)> {
-        let (collection, base) = if request.path.starts_with("/carddav/") {
-            (CollectionKind::Contacts, "/carddav/")
-        } else if request.path.starts_with("/caldav/") {
-            (CollectionKind::Tasks, "/caldav/")
-        } else {
-            return None;
+        let (_, route) = self.resolve_request_route(&request.path)?;
+        let collection = match route.collection {
+            DomainCollection::Contacts => CollectionKind::Contacts,
+            DomainCollection::Tasks => CollectionKind::Tasks,
+            DomainCollection::Events => return None,
         };
-        let configured = match collection {
-            CollectionKind::Contacts => self.config.contacts_collection.as_str(),
-            CollectionKind::Tasks => self.config.tasks_collection.as_str(),
-        };
-        let remainder = request.path.strip_prefix(base)?;
-        let remainder = remainder.strip_prefix(configured)?;
+        let remainder = request.path.strip_prefix(&route.path)?;
         let resource_id = remainder
             .strip_prefix('/')
             .filter(|value| !value.is_empty())
@@ -981,6 +1082,45 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             _ => Operation::Read,
         };
         Some((collection, resource_id, operation))
+    }
+
+    fn resolve_request_route(&self, path: &str) -> Option<(&DomainBinding, &DavRoute)> {
+        self.bindings.bindings.iter().find_map(|binding| {
+            binding.routes.iter().find_map(|route| {
+                let exact = path == route.path;
+                let descendant = path
+                    .strip_prefix(&route.path)
+                    .is_some_and(|remainder| remainder.starts_with('/'));
+                (exact || descendant).then_some((binding, route))
+            })
+        })
+    }
+
+    fn has_collection_route(&self, collection: DomainCollection) -> bool {
+        self.bindings
+            .bindings
+            .iter()
+            .flat_map(|binding| binding.routes.iter())
+            .any(|route| route.collection == collection)
+    }
+
+    fn activate_domain(&mut self, domain_id: &str) -> Result<(), ConfigError> {
+        if self.active_domain_id == domain_id {
+            return Ok(());
+        }
+        let target = self
+            .repository_contexts
+            .remove(domain_id)
+            .ok_or_else(|| ConfigError::Invalid("unknown repository binding context".into()))?;
+        let current = RepositoryContext {
+            binding: std::mem::replace(&mut self.server.repository.binding, target.binding),
+            cache: std::mem::replace(&mut self.server.repository.cache, target.cache),
+            contacts: std::mem::replace(&mut self.server.contacts, target.contacts),
+            tasks: std::mem::replace(&mut self.server.tasks, target.tasks),
+        };
+        let previous_domain = std::mem::replace(&mut self.active_domain_id, domain_id.to_owned());
+        self.repository_contexts.insert(previous_domain, current);
+        Ok(())
     }
 
     fn authorized(&self, request: &any_cal_dav_server::Request) -> bool {
@@ -1139,21 +1279,29 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             self.upstream = UpstreamState::Ready;
             return;
         }
-        let space_id = self.config.space_id.clone();
-        self.upstream = match self
-            .server
-            .repository
-            .transport
-            .list_objects(&space_id, None)
-        {
-            Ok(_) => UpstreamState::Ready,
-            Err(error) => UpstreamState::Unavailable(error.category()),
-        };
+        let spaces = self
+            .bindings
+            .bindings
+            .iter()
+            .map(|binding| binding.space_id.clone())
+            .collect::<BTreeSet<_>>();
+        for space_id in spaces {
+            if let Err(error) = self
+                .server
+                .repository
+                .transport
+                .list_objects(&space_id, None)
+            {
+                self.upstream = UpstreamState::Unavailable(error.category());
+                return;
+            }
+        }
+        self.upstream = UpstreamState::Ready;
     }
 
     fn upstream_json(&self) -> String {
         let configured =
-            !self.config.endpoint.trim().is_empty() && !self.config.space_id.trim().is_empty();
+            !self.config.endpoint.trim().is_empty() && !self.bindings.bindings.is_empty();
         let error = self
             .upstream
             .error()
@@ -1218,7 +1366,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             "ok endpoint={} api_version={} space_configured={} listen_address={} token_configured={} transport={} upstream_tested={} auth_audit_enabled={} max_connections={}",
             redact_endpoint(&self.config.endpoint),
             self.config.api_version,
-            !self.config.space_id.trim().is_empty(),
+            !self.bindings.bindings.is_empty(),
             self.config.listen_address,
             self.config.token.is_some(),
             self.transport_mode,
