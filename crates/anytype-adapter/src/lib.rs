@@ -204,6 +204,73 @@ pub enum TransportError {
     Other(String),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredSpace {
+    pub id: String,
+    pub name: String,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredType {
+    pub id: String,
+    pub key: String,
+    pub name: String,
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredProperty {
+    pub id: String,
+    #[serde(default)]
+    pub key: Option<String>,
+    pub name: String,
+    pub format: String,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredMember {
+    #[serde(alias = "id")]
+    pub profile_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub global_name: Option<String>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredTag {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredView {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FakeObjectStore {
     objects: BTreeMap<(String, String), ObjectRecord>,
