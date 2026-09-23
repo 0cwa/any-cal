@@ -488,7 +488,6 @@ fn pagination_advances_offsets_deterministically() {
     assert!(second.next_offset.is_none());
 }
 
-
 #[test]
 fn discovery_uses_stable_v1_space_scoped_read_only_endpoints() {
     let scripted = Scripted {
@@ -560,9 +559,7 @@ fn discovery_uses_stable_v1_space_scoped_read_only_endpoints() {
     assert_eq!(members.data[0].role, "Viewer");
     assert_eq!(members.data[0].extra["identity"], "network-id");
 
-    let tags = transport
-        .list_tags("space one", "prop/tags", None)
-        .unwrap();
+    let tags = transport.list_tags("space one", "prop/tags", None).unwrap();
     assert_eq!(tags.data[0].id, "tag-1");
     assert_eq!(tags.data[0].color.as_deref(), Some("red"));
     assert_eq!(tags.data[0].extra["objects_count"], 2);
