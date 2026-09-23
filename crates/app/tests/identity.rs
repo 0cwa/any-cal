@@ -120,6 +120,102 @@ fn collection_and_resource_acl_are_principal_scoped_and_non_leaky() {
 }
 
 #[test]
+fn domain_scoped_acl_keeps_identical_collections_and_resources_isolated() {
+    let alice = principal("alice");
+    let mut policy = AccessPolicy::new();
+    assert!(policy.grant_domain_collection(
+        alice.clone(),
+        "personal",
+        CollectionKind::Contacts,
+        Operation::Read,
+    ));
+    assert!(policy.grant_domain_collection(
+        alice.clone(),
+        "personal",
+        CollectionKind::Contacts,
+        Operation::Write,
+    ));
+    assert!(policy.grant_domain_collection(
+        alice.clone(),
+        "shared",
+        CollectionKind::Contacts,
+        Operation::Read,
+    ));
+    assert!(policy.grant_domain_resource(
+        alice.clone(),
+        "shared",
+        CollectionKind::Tasks,
+        "same-id.ics",
+        Operation::Read,
+    ));
+    assert!(!policy.grant_domain_collection(
+        alice.clone(),
+        "bad domain",
+        CollectionKind::Contacts,
+        Operation::Read,
+    ));
+
+    assert_eq!(
+        policy.authorize_domain(
+            &alice,
+            "personal",
+            CollectionKind::Contacts,
+            Some("same-id.vcf"),
+            Operation::Write,
+        ),
+        AccessDecision::Allowed
+    );
+    assert_eq!(
+        policy.authorize_domain(
+            &alice,
+            "shared",
+            CollectionKind::Contacts,
+            Some("same-id.vcf"),
+            Operation::Write,
+        ),
+        AccessDecision::NotFound
+    );
+    assert_eq!(
+        policy.authorize_domain(
+            &alice,
+            "shared",
+            CollectionKind::Contacts,
+            Some("same-id.vcf"),
+            Operation::Read,
+        ),
+        AccessDecision::Allowed
+    );
+    assert_eq!(
+        policy.authorize_domain(
+            &alice,
+            "personal",
+            CollectionKind::Tasks,
+            Some("same-id.ics"),
+            Operation::Read,
+        ),
+        AccessDecision::NotFound
+    );
+    assert_eq!(
+        policy.authorize_domain(
+            &alice,
+            "shared",
+            CollectionKind::Tasks,
+            Some("same-id.ics"),
+            Operation::Read,
+        ),
+        AccessDecision::Allowed
+    );
+    assert_eq!(
+        policy.capabilities_for_domain(&alice, "personal"),
+        BTreeSet::from([Capability::ReadContacts, Capability::WriteContacts])
+    );
+    assert_eq!(
+        policy.capabilities_for_domain(&alice, "shared"),
+        BTreeSet::from([Capability::ReadContacts])
+    );
+}
+
+#[test]
 fn capability_discovery_is_authenticated_and_excludes_resource_ids() {
     let alice = principal("alice");
     let mut policy = AccessPolicy::new();
@@ -255,7 +351,7 @@ fn revoked_state_and_acl_survive_restart_and_malformed_state_fails_closed() {
     ));
     fs::write(
         &path,
-        b"{\"version\":2,\"credentials\":[],\"collections\":[],\"resources\":[]}",
+        b"{\"version\":3,\"credentials\":[],\"collections\":[],\"resources\":[]}",
     )
     .unwrap();
     #[cfg(unix)]

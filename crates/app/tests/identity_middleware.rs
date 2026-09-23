@@ -468,3 +468,202 @@ fn auth_audit_emission_is_configuration_controlled() {
         .expect("synthetic configuration is valid");
     assert!(!config.emit_auth_events);
 }
+
+#[test]
+fn multi_domain_identity_never_inherits_grants_across_spaces() {
+    let alice = principal("alice");
+    let bob = principal("bob");
+    let mut policy = AccessPolicy::new();
+    assert!(policy.grant_domain_collection(
+        alice.clone(),
+        "personal",
+        CollectionKind::Contacts,
+        Operation::Read,
+    ));
+    assert!(policy.grant_domain_collection(
+        alice.clone(),
+        "personal",
+        CollectionKind::Contacts,
+        Operation::Write,
+    ));
+    assert!(policy.grant_domain_collection(
+        alice.clone(),
+        "shared",
+        CollectionKind::Contacts,
+        Operation::Read,
+    ));
+    assert!(policy.grant_domain_collection(
+        bob.clone(),
+        "shared",
+        CollectionKind::Contacts,
+        Operation::Read,
+    ));
+    assert!(policy.grant_domain_collection(
+        bob.clone(),
+        "shared",
+        CollectionKind::Contacts,
+        Operation::Write,
+    ));
+
+    let mut identity = IdentityStore::new(policy);
+    for (id, owner, token) in [
+        ("alice-domain-key", alice, "alice-domain-token"),
+        ("bob-domain-key", bob, "bob-domain-token"),
+    ] {
+        identity
+            .add_credential(
+                CredentialSpec {
+                    id: id.into(),
+                    principal: owner,
+                    not_before: 100,
+                    expires_at: 200,
+                    capabilities: BTreeSet::new(),
+                },
+                token,
+            )
+            .unwrap();
+    }
+
+    let mut config = AppConfig::defaults();
+    config.space_id = "legacy-must-not-authorize".into();
+    config.credential_profile_id = "primary".into();
+    config.domain_bindings_json = Some(
+        r#"{
+          "version":1,
+          "bindings":[
+            {
+              "domain_id":"personal",
+              "label":"Personal",
+              "space_id":"space-a",
+              "credential_profile_id":"primary",
+              "routes":[
+                {"collection":"contacts","component":"vcard","path":"/carddav/personal"}
+              ],
+              "schema_profile":"default",
+              "checkpoint_namespace":"personal",
+              "visibility":"private",
+              "lifecycle":"configured"
+            },
+            {
+              "domain_id":"shared",
+              "label":"Shared",
+              "space_id":"space-b",
+              "credential_profile_id":"primary",
+              "routes":[
+                {"collection":"contacts","component":"vcard","path":"/carddav/shared"}
+              ],
+              "schema_profile":"default",
+              "checkpoint_namespace":"shared",
+              "visibility":"shared",
+              "lifecycle":"configured"
+            }
+          ]
+        }"#
+        .into(),
+    );
+    let mut app = App::fake(config).unwrap().with_identity(identity, 150);
+    let personal_body =
+        b"BEGIN:VCARD\r\nVERSION:4.0\r\nUID:same\r\nFN:Personal Alice\r\nEND:VCARD\r\n";
+    let shared_body = b"BEGIN:VCARD\r\nVERSION:4.0\r\nUID:same\r\nFN:Shared Bob\r\nEND:VCARD\r\n";
+
+    assert_eq!(
+        app.handle(request(
+            "PUT",
+            "/carddav/personal/same.vcf",
+            Some("alice-domain-token"),
+            personal_body,
+        ))
+        .status,
+        201
+    );
+    assert_eq!(
+        app.handle(request(
+            "PUT",
+            "/carddav/shared/same.vcf",
+            Some("bob-domain-token"),
+            shared_body,
+        ))
+        .status,
+        201
+    );
+
+    let personal = app.handle(request(
+        "GET",
+        "/carddav/personal/same.vcf",
+        Some("alice-domain-token"),
+        &[],
+    ));
+    assert_eq!(personal.status, 200);
+    assert!(String::from_utf8(personal.body)
+        .unwrap()
+        .contains("FN:Personal Alice"));
+
+    let shared = app.handle(request(
+        "GET",
+        "/carddav/shared/same.vcf",
+        Some("alice-domain-token"),
+        &[],
+    ));
+    assert_eq!(shared.status, 200);
+    assert!(String::from_utf8(shared.body)
+        .unwrap()
+        .contains("FN:Shared Bob"));
+
+    assert_eq!(
+        app.handle(request(
+            "PUT",
+            "/carddav/shared/same.vcf",
+            Some("alice-domain-token"),
+            shared_body,
+        ))
+        .status,
+        404
+    );
+    assert_eq!(
+        app.handle(request(
+            "GET",
+            "/carddav/personal/same.vcf",
+            Some("bob-domain-token"),
+            &[],
+        ))
+        .status,
+        404
+    );
+
+    let options = app.handle(request(
+        "OPTIONS",
+        "/carddav/shared",
+        Some("alice-domain-token"),
+        &[],
+    ));
+    assert_eq!(options.status, 200);
+    let allow = options
+        .headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("allow"))
+        .map(|(_, value)| value.as_str())
+        .unwrap();
+    assert!(allow.contains("GET") && allow.contains("REPORT"));
+    assert!(!allow.contains("PUT") && !allow.contains("DELETE"));
+
+    assert_eq!(
+        app.handle(request(
+            "PROPFIND",
+            "/carddav/",
+            Some("alice-domain-token"),
+            b"<allprop/>",
+        ))
+        .status,
+        403
+    );
+    assert_eq!(
+        app.handle(request(
+            "GET",
+            "/carddav/space-b/same.vcf",
+            Some("alice-domain-token"),
+            &[],
+        ))
+        .status,
+        404
+    );
+}
