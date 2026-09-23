@@ -83,6 +83,10 @@ where
             .binding_fingerprint
             .clone();
 
+        // A failed refresh must not leave a previously successful snapshot
+        // looking current for this binding.
+        self.discovery_snapshots.remove(domain_id);
+
         let spaces = collect_pages(|offset| {
             self.registry
                 .with_transport_mut(|transport| transport.list_spaces(offset))
@@ -157,7 +161,9 @@ where
     }
 
     pub fn discovery_snapshot(&self, domain_id: &str) -> Option<&SpaceDiscoverySnapshot> {
-        self.discovery_snapshots.get(domain_id)
+        let snapshot = self.discovery_snapshots.get(domain_id)?;
+        self.snapshot_matches_current_binding(snapshot)
+            .then_some(snapshot)
     }
 
     /// Discover views for a list that is already known inside the configured
@@ -183,6 +189,47 @@ where
         })?;
         views.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(views)
+    }
+}
+
+impl<T: AnytypeTransport> AppGeneric<T> {
+    fn snapshot_matches_current_binding(&self, snapshot: &SpaceDiscoverySnapshot) -> bool {
+        self.registry
+            .context(&snapshot.domain_id)
+            .is_some_and(|context| {
+                context.binding.space_id == snapshot.space_id
+                    && context.binding.schema_profile == snapshot.schema_profile
+                    && context.server.repository.binding.binding_fingerprint
+                        == snapshot.binding_fingerprint
+            })
+    }
+
+    /// Operational schema state is intentionally independent from transport
+    /// readiness. Missing richer schema never makes canonical body-only DAV
+    /// storage unavailable.
+    pub(crate) fn schema_health_json(&self) -> String {
+        let configured_domains = self.registry.len();
+        let current = self
+            .discovery_snapshots
+            .values()
+            .filter(|snapshot| self.snapshot_matches_current_binding(snapshot))
+            .collect::<Vec<_>>();
+        let discovered_domains = current.len();
+        let all_ready = discovered_domains == configured_domains
+            && configured_domains > 0
+            && current.iter().all(|snapshot| snapshot.schema_ready);
+        let status = if discovered_domains == 0 {
+            "not_discovered"
+        } else if discovered_domains < configured_domains {
+            "partial"
+        } else if all_ready {
+            "ready"
+        } else {
+            "body_only"
+        };
+        format!(
+            "{{\"status\":\"{status}\",\"ready\":{all_ready},\"body_only_available\":true,\"configured_domains\":{configured_domains},\"discovered_domains\":{discovered_domains}}}"
+        )
     }
 }
 
