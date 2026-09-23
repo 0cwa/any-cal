@@ -43,9 +43,11 @@ fn request(method: &str, path: &str, body: &[u8]) -> Request {
     Request {
         method: method.into(),
         path: path.into(),
-        headers: (method == "PUT")
-            .then(|| vec![("Content-Type".into(), "text/vcard".into())])
-            .unwrap_or_default(),
+        headers: if method == "PUT" {
+            vec![("Content-Type".into(), "text/vcard".into())]
+        } else {
+            Vec::new()
+        },
         body: body.to_vec(),
     }
 }
