@@ -1,6 +1,6 @@
 use any_cal_anytype_adapter::{AmbiguousMutation, FakeAnytypeTransport};
 use any_cal_app::{App, AppConfig};
-use any_cal_core::{Repository, ResourceId, WriteCondition};
+use any_cal_core::{ResourceId, WriteCondition};
 use any_cal_dav_server::{Request, Response};
 
 fn multi_domain_config() -> AppConfig {
@@ -100,17 +100,14 @@ fn same_contact_identity_and_ambiguous_create_remain_space_qualified() {
     // The second Space uses the exact same DAV UID, resource ID and provisional
     // Anytype object ID. Force an ambiguous transport result so reconciliation
     // must search only the binding-selected Space rather than adopting A's row.
-    app.server
-        .repository
-        .transport
-        .timeout_after(AmbiguousMutation::Create);
+    app.with_transport_mut(|transport| transport.timeout_after(AmbiguousMutation::Create));
     assert_eq!(
         app.handle(contact("/carddav/shared/same-contact.vcf", "Shared Bob"))
             .status,
         201
     );
 
-    let transport = &app.server.repository.transport;
+    let transport = app.transport_snapshot();
     assert!(transport
         .objects
         .contains_in_space("space-a", "same-contact"));
@@ -121,8 +118,9 @@ fn same_contact_identity_and_ambiguous_create_remain_space_qualified() {
         .objects
         .contains_in_space("legacy-scalar-must-not-be-used", "same-contact"));
     assert_eq!(transport.create_calls, 2);
-    assert_eq!(app.server.repository.metrics.ambiguous_mutations, 1);
-    assert_eq!(app.server.repository.metrics.reconciled_mutations, 1);
+    let shared_metrics = app.repository_metrics("shared").unwrap();
+    assert_eq!(shared_metrics.ambiguous_mutations, 1);
+    assert_eq!(shared_metrics.reconciled_mutations, 1);
 
     let personal = get(&mut app, "/carddav/personal/same-contact.vcf");
     assert_eq!(personal.status, 200);
@@ -202,7 +200,7 @@ fn update_and_archive_of_same_task_identity_do_not_cross_spaces() {
     assert_eq!(get(&mut app, "/caldav/shared/same-task.ics").status, 404);
     assert_eq!(get(&mut app, "/caldav/personal/same-task.ics").status, 200);
 
-    let transport = &app.server.repository.transport;
+    let transport = app.transport_snapshot();
     assert!(
         !transport
             .objects
@@ -238,16 +236,14 @@ fn missing_resource_in_other_space_and_unknown_routes_do_not_mutate_active_bindi
     );
 
     // The miss in B must not be interpreted as a deletion/tombstone of A, and
-    // switching back must recover A's binding-scoped cache/remote view.
+    // the independent personal context must retain A's cache/remote view.
     let personal = get(&mut app, "/carddav/personal/same-contact.vcf");
     assert_eq!(personal.status, 200);
     assert!(String::from_utf8(personal.body)
         .unwrap()
         .contains("FN:Only in personal"));
     assert!(
-        !app.server
-            .repository
-            .transport
+        !app.transport_snapshot()
             .objects
             .get_in_space("space-a", "same-contact")
             .unwrap()
@@ -292,32 +288,22 @@ fn hard_delete_after_route_selection_remains_in_selected_space() {
         201
     );
 
-    // Select the shared binding through the public route before exercising the
-    // repository's hard-delete operation. The binding-scoped repository must
-    // remove only the object in space-b even though space-a has the same ID.
-    assert_eq!(
-        get(&mut app, "/carddav/shared/same-contact.vcf").status,
-        200
-    );
-    app.server
-        .repository
-        .delete_resource(
-            &ResourceId::try_from("same-contact").unwrap(),
-            WriteCondition::Unconditional,
-        )
-        .unwrap();
+    // Exercise the explicitly selected shared repository context directly.
+    // The mutation must remove only space-b even though space-a has the same ID.
+    app.delete_resource_in_domain(
+        "shared",
+        &ResourceId::try_from("same-contact").unwrap(),
+        WriteCondition::Unconditional,
+    )
+    .unwrap()
+    .unwrap();
 
-    assert!(app
-        .server
-        .repository
-        .transport
+    let transport = app.transport_snapshot();
+    assert!(transport
         .objects
         .get_in_space("space-b", "same-contact")
         .is_none());
-    assert!(app
-        .server
-        .repository
-        .transport
+    assert!(transport
         .objects
         .get_in_space("space-a", "same-contact")
         .is_some());
