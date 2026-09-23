@@ -178,15 +178,17 @@ impl ForeignObjectRef {
         self.validate()?;
         let mut hasher = Sha256::new();
         hash_field(&mut hasher, "any-cal-foreign-object");
-        hash_field(&mut hasher, &self.upstream_account_fingerprint.to_ascii_lowercase());
+        hash_field(
+            &mut hasher,
+            &self.upstream_account_fingerprint.to_ascii_lowercase(),
+        );
         hash_field(&mut hasher, &self.source_space_id);
         hash_field(&mut hasher, &self.source_object_id);
         Ok(hex_digest(hasher.finalize().as_slice()))
     }
 
     fn normalize(&mut self) {
-        self.upstream_account_fingerprint =
-            self.upstream_account_fingerprint.to_ascii_lowercase();
+        self.upstream_account_fingerprint = self.upstream_account_fingerprint.to_ascii_lowercase();
     }
 }
 
@@ -318,8 +320,7 @@ impl MaterializedReference {
     }
 
     pub fn from_json(input: &str) -> Result<Self, CompositionError> {
-        let value: Self =
-            serde_json::from_str(input).map_err(|_| CompositionError::InvalidJson)?;
+        let value: Self = serde_json::from_str(input).map_err(|_| CompositionError::InvalidJson)?;
         value.validate()?;
         Ok(value)
     }
@@ -439,11 +440,11 @@ pub fn apply_destination_mutation(
             updated.validate()?;
             Ok(DestinationMutationResult::Updated(updated))
         }
-        DestinationMutation::DeleteReference => Ok(DestinationMutationResult::Deleted(
-            DestinationDeletion {
+        DestinationMutation::DeleteReference => {
+            Ok(DestinationMutationResult::Deleted(DestinationDeletion {
                 foreign_identity_fingerprint: existing.foreign.identity_fingerprint()?,
-            },
-        )),
+            }))
+        }
     }
 }
 
@@ -460,10 +461,7 @@ fn validate_identifier(value: &str, field: &'static str) -> Result<(), Compositi
 }
 
 fn validate_opaque(value: &str, field: &'static str) -> Result<(), CompositionError> {
-    if value.trim().is_empty()
-        || value.len() > 512
-        || value.chars().any(char::is_control)
-    {
+    if value.trim().is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
         return Err(CompositionError::InvalidField(field));
     }
     Ok(())
@@ -471,10 +469,7 @@ fn validate_opaque(value: &str, field: &'static str) -> Result<(), CompositionEr
 
 fn validate_fields(fields: &BTreeMap<String, Value>) -> Result<(), CompositionError> {
     for key in fields.keys() {
-        if key.trim().is_empty()
-            || key.len() > 128
-            || key.chars().any(char::is_control)
-        {
+        if key.trim().is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
             return Err(CompositionError::InvalidField("fields"));
         }
     }
@@ -488,9 +483,7 @@ fn canonical_json<T: Serialize>(value: &T) -> Result<String, CompositionError> {
 
 fn canonicalize_json(value: Value) -> Value {
     match value {
-        Value::Array(values) => {
-            Value::Array(values.into_iter().map(canonicalize_json).collect())
-        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_json).collect()),
         Value::Object(values) => {
             let ordered = values
                 .into_iter()
