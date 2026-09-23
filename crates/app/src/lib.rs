@@ -10,7 +10,7 @@ use any_cal_observability::{
     ReconciliationReport,
 };
 use any_cal_sync::{CommitFault, ObservedResource, SyncState, SyncStore};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
@@ -205,6 +205,7 @@ pub struct AppGeneric<T: AnytypeTransport> {
     pub config: AppConfig,
     transport_mode: &'static str,
     registry: DomainRepositoryRegistry<T>,
+    discovery_snapshots: BTreeMap<String, discovery::SpaceDiscoverySnapshot>,
     upstream: UpstreamState,
     sync: Option<SyncStore>,
     pub events: EventBuffer,
@@ -509,10 +510,11 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                 ""
             };
             let upstream_json = self.upstream_json();
+            let schema_json = self.schema_json();
             let space_configured = !self.registry.is_empty();
             let contacts_configured = self.has_collection_route(DomainCollection::Contacts);
             let tasks_configured = self.has_collection_route(DomainCollection::Tasks);
-            let body = format!("{{\"status\":\"{service_state}\",\"ready\":{service_ready},\"space_configured\":{},\"contacts_collection_configured\":{},\"tasks_collection_configured\":{},\"transport\":\"{}\",\"upstream\":{},\"cache\":\"rebuildable\",\"events\":{},\"failures\":{},\"last_error\":{},\"recovery\":\"sync-checkpoint\"{}{}{} }}", space_configured, contacts_configured, tasks_configured, self.transport_mode, upstream_json, self.health.counters.events, self.health.counters.failures, last_error, sync_export_json, separator, audit_json);
+            let body = format!("{{\"status\":\"{service_state}\",\"ready\":{service_ready},\"space_configured\":{},\"contacts_collection_configured\":{},\"tasks_collection_configured\":{},\"transport\":\"{}\",\"upstream\":{},\"schema\":{},\"cache\":\"rebuildable\",\"events\":{},\"failures\":{},\"last_error\":{},\"recovery\":\"sync-checkpoint\"{}{}{} }}", space_configured, contacts_configured, tasks_configured, self.transport_mode, upstream_json, schema_json, self.health.counters.events, self.health.counters.failures, last_error, sync_export_json, separator, audit_json);
             self.health.record(true, 0, None);
             self.events
                 .push(correlation.event("health", None, "health check"));
@@ -1046,6 +1048,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             config,
             transport_mode,
             registry,
+            discovery_snapshots: BTreeMap::new(),
             upstream: if transport_mode == "fake" {
                 UpstreamState::Ready
             } else {
@@ -1440,6 +1443,27 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             }
         }
         self.upstream = UpstreamState::Ready;
+    }
+
+    fn schema_json(&self) -> String {
+        let configured = self.registry.len();
+        let discovered = self.discovery_snapshots.len();
+        let all_discovered = configured > 0 && discovered == configured;
+        let all_ready = all_discovered
+            && self
+                .discovery_snapshots
+                .values()
+                .all(|snapshot| snapshot.schema_ready);
+        let status = if discovered == 0 {
+            "not_discovered"
+        } else if all_ready {
+            "ready"
+        } else {
+            "body_only"
+        };
+        format!(
+            "{{\"status\":\"{status}\",\"ready\":{all_ready},\"body_only_available\":true,\"configured_domains\":{configured},\"discovered_domains\":{discovered}}}"
+        )
     }
 
     fn upstream_json(&self) -> String {
