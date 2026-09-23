@@ -11,7 +11,13 @@ use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+pub mod discovery;
 pub mod wire;
+
+pub use discovery::{
+    AnytypeDiscovery, DiscoveryPage, MemberRecord, PropertyRecord, TagRecord, TypeRecord,
+    ViewRecord, DISCOVERY_PAGE_LIMIT,
+};
 
 pub const API_VERSION: &str = "2025-11-08";
 /// Anytype currently accepts unconditional writes and does not expose a
@@ -920,6 +926,99 @@ fn map_io_error(error: std::io::Error) -> TransportError {
 
 fn map_tls_error(error: std::io::Error) -> TransportError {
     map_io_error(error)
+}
+
+fn discovery_page_path(
+    base: String,
+    offset: Option<&str>,
+) -> Result<String, TransportError> {
+    let offset = offset.unwrap_or("0");
+    if offset.parse::<u64>().is_err() {
+        return Err(TransportError::InvalidRequest(
+            "discovery offset must be an unsigned integer".into(),
+        ));
+    }
+    Ok(format!(
+        "{base}?offset={offset}&limit={}",
+        discovery::DISCOVERY_PAGE_LIMIT
+    ))
+}
+
+impl discovery::AnytypeDiscovery for HttpAnytypeTransport {
+    fn list_types(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<discovery::DiscoveryPage<discovery::TypeRecord>, TransportError> {
+        let path = discovery_page_path(
+            format!("/v1/spaces/{}/types", encode_path_segment(space_id)),
+            offset,
+        )?;
+        let response = self.request("GET", &path, None)?;
+        discovery::decode_page(&response.body)
+    }
+
+    fn list_properties(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<discovery::DiscoveryPage<discovery::PropertyRecord>, TransportError> {
+        let path = discovery_page_path(
+            format!("/v1/spaces/{}/properties", encode_path_segment(space_id)),
+            offset,
+        )?;
+        let response = self.request("GET", &path, None)?;
+        discovery::decode_page(&response.body)
+    }
+
+    fn list_members(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<discovery::DiscoveryPage<discovery::MemberRecord>, TransportError> {
+        let path = discovery_page_path(
+            format!("/v1/spaces/{}/members", encode_path_segment(space_id)),
+            offset,
+        )?;
+        let response = self.request("GET", &path, None)?;
+        discovery::decode_page(&response.body)
+    }
+
+    fn list_tags(
+        &mut self,
+        space_id: &str,
+        property_id: &str,
+        offset: Option<&str>,
+    ) -> Result<discovery::DiscoveryPage<discovery::TagRecord>, TransportError> {
+        let path = discovery_page_path(
+            format!(
+                "/v1/spaces/{}/properties/{}/tags",
+                encode_path_segment(space_id),
+                encode_path_segment(property_id)
+            ),
+            offset,
+        )?;
+        let response = self.request("GET", &path, None)?;
+        discovery::decode_page(&response.body)
+    }
+
+    fn list_views(
+        &mut self,
+        space_id: &str,
+        list_id: &str,
+        offset: Option<&str>,
+    ) -> Result<discovery::DiscoveryPage<discovery::ViewRecord>, TransportError> {
+        let path = discovery_page_path(
+            format!(
+                "/v1/spaces/{}/lists/{}/views",
+                encode_path_segment(space_id),
+                encode_path_segment(list_id)
+            ),
+            offset,
+        )?;
+        let response = self.request("GET", &path, None)?;
+        discovery::decode_page(&response.body)
+    }
 }
 
 impl AnytypeTransport for HttpAnytypeTransport {
