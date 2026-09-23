@@ -909,10 +909,11 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         else {
             return None;
         };
-        let (collection, resource_id, _) = self.request_scope(request)?;
+        let (domain_id, collection, resource_id, _) = self.request_scope(request)?;
         Some(
-            identity.policy.authorize(
+            identity.policy.authorize_domain(
                 &principal,
+                &domain_id,
                 collection,
                 resource_id.as_deref(),
                 Operation::Write,
@@ -1011,7 +1012,11 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             self.record_auth_event(request, "invalid", None);
             return Some(401);
         };
-        let capabilities = identity.capabilities(token, self.identity_now);
+        let capabilities = identity.capabilities_for_domain(
+            token,
+            self.identity_now,
+            self.registry.primary_domain_id(),
+        );
         let account_capable = capabilities.contains(&Capability::ReadContacts)
             || capabilities.contains(&Capability::WriteContacts)
             || capabilities.contains(&Capability::ReadTasks)
@@ -1042,11 +1047,29 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             self.record_auth_event(request, auth_outcome_name(outcome), None);
             return Some(401);
         }
-        let (collection, resource_id, operation) = self.request_scope(request)?;
-        let decision =
-            identity
-                .policy
-                .authorize(&principal, collection, resource_id.as_deref(), operation);
+        if matches!(
+            request.path.as_str(),
+            "/" | "/principals/users/default" | "/.well-known/caldav" | "/.well-known/carddav"
+        ) {
+            self.record_auth_event(request, "authenticated", Some(&principal));
+            return None;
+        }
+        if matches!(request.path.as_str(), "/carddav/" | "/caldav/") && self.registry.len() > 1 {
+            self.record_auth_event(request, "forbidden", Some(&principal));
+            return Some(403);
+        }
+        let Some((domain_id, collection, resource_id, operation)) = self.request_scope(request)
+        else {
+            self.record_auth_event(request, "not_found", Some(&principal));
+            return Some(404);
+        };
+        let decision = identity.policy.authorize_domain(
+            &principal,
+            &domain_id,
+            collection,
+            resource_id.as_deref(),
+            operation,
+        );
         let capability = capability_for(collection, operation);
         let capability_allowed = identity.credential_allows(token, self.identity_now, capability);
         match (decision, capability_allowed) {
@@ -1105,8 +1128,41 @@ impl<T: AnytypeTransport> AppGeneric<T> {
     fn request_scope(
         &self,
         request: &any_cal_dav_server::Request,
-    ) -> Option<(CollectionKind, Option<String>, Operation)> {
-        let (_, route) = self.resolve_request_route(&request.path)?;
+    ) -> Option<(String, CollectionKind, Option<String>, Operation)> {
+        let operation = match request.method.as_str() {
+            "PUT" | "DELETE" => Operation::Write,
+            _ => Operation::Read,
+        };
+        if matches!(request.path.as_str(), "/carddav/" | "/caldav/") {
+            if self.registry.len() != 1 {
+                return None;
+            }
+            let collection = if request.path == "/carddav/" {
+                DomainCollection::Contacts
+            } else {
+                DomainCollection::Tasks
+            };
+            let context = self.registry.primary();
+            if !context
+                .binding
+                .routes
+                .iter()
+                .any(|route| route.collection == collection)
+            {
+                return None;
+            }
+            return Some((
+                context.binding.domain_id.clone(),
+                match collection {
+                    DomainCollection::Contacts => CollectionKind::Contacts,
+                    DomainCollection::Tasks => CollectionKind::Tasks,
+                    DomainCollection::Events => return None,
+                },
+                None,
+                operation,
+            ));
+        }
+        let (domain_id, route) = self.resolve_request_route(&request.path)?;
         let collection = match route.collection {
             DomainCollection::Contacts => CollectionKind::Contacts,
             DomainCollection::Tasks => CollectionKind::Tasks,
@@ -1117,11 +1173,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             .strip_prefix('/')
             .filter(|value| !value.is_empty())
             .map(str::to_owned);
-        let operation = match request.method.as_str() {
-            "PUT" | "DELETE" => Operation::Write,
-            _ => Operation::Read,
-        };
-        Some((collection, resource_id, operation))
+        Some((domain_id.to_owned(), collection, resource_id, operation))
     }
 
     fn resolve_request_route(&self, path: &str) -> Option<(&str, &DavRoute)> {
