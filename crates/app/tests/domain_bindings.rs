@@ -135,13 +135,8 @@ fn explicit_multi_domain_routes_keep_same_resource_identity_space_qualified() {
     });
     assert_eq!(shared.status, 201);
 
-    let objects = app
-        .server
-        .repository
-        .transport
-        .objects
-        .values()
-        .collect::<Vec<_>>();
+    let transport = app.transport_snapshot();
+    let objects = transport.objects.values().collect::<Vec<_>>();
     assert_eq!(objects.len(), 2);
     assert!(objects.iter().any(|object| object.space_id == "space-a"));
     assert!(objects.iter().any(|object| object.space_id == "space-b"));
@@ -170,7 +165,18 @@ fn explicit_multi_domain_routes_keep_same_resource_identity_space_qualified() {
     assert!(String::from_utf8(shared_get.body)
         .unwrap()
         .contains("FN:Shared Bob"));
-    assert_eq!(app.server.repository.binding.space_id, "space-b");
+
+    // Routing Shared must not mutate a process-global "active" repository.
+    let personal_again = app.handle(Request {
+        method: "GET".into(),
+        path: "/carddav/personal/same.vcf".into(),
+        headers: vec![],
+        body: vec![],
+    });
+    assert_eq!(personal_again.status, 200);
+    assert!(String::from_utf8(personal_again.body)
+        .unwrap()
+        .contains("FN:Personal Alice"));
 }
 
 #[test]
