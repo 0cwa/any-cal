@@ -643,7 +643,7 @@ fn durable_checkpoint_tracks_dav_write_and_reopens() {
         .observed
         .values()
         .any(|item| item.dav_uid == "checkpoint")));
-    let remote = app.server.repository.transport.clone();
+    let remote = app.transport_snapshot();
     drop(app);
     let mut reopened = App::with_transport(config, remote).unwrap();
     assert!(reopened.sync_state().is_some_and(|state| state
@@ -1708,7 +1708,7 @@ fn restart_reopens_from_remote_state_with_stable_etag_and_archive() {
     let mut c = AppConfig::defaults();
     c.space_id = "space".into();
     let mut first = App::with_transport(c.clone(), seeded_transport()).unwrap();
-    let put = first.server.handle(Request {
+    let put = first.handle_primary_dav(Request {
         method: "PUT".into(),
         path: "/carddav/contacts/reopen.vcf".into(),
         headers: vec![("Content-Type".into(), "text/vcard".into())],
@@ -1722,9 +1722,9 @@ fn restart_reopens_from_remote_state_with_stable_etag_and_archive() {
         .unwrap()
         .1
         .clone();
-    let remote = first.server.repository.transport.clone();
+    let remote = first.transport_snapshot();
     let mut second = App::with_transport(c, remote).unwrap();
-    let get = second.server.handle(Request {
+    let get = second.handle_primary_dav(Request {
         method: "GET".into(),
         path: "/carddav/contacts/reopen.vcf".into(),
         headers: vec![],
@@ -1735,7 +1735,7 @@ fn restart_reopens_from_remote_state_with_stable_etag_and_archive() {
         get.headers.iter().find(|(key, _)| key == "ETag").unwrap().1,
         etag
     );
-    let report = second.server.handle(Request {
+    let report = second.handle_primary_dav(Request {
         method: "REPORT".into(),
         path: "/carddav/contacts".into(),
         headers: vec![],
@@ -1745,22 +1745,18 @@ fn restart_reopens_from_remote_state_with_stable_etag_and_archive() {
     assert!(String::from_utf8(report.body)
         .unwrap()
         .contains("reopen.vcf"));
-    let archived = second.server.handle(Request {
+    let archived = second.handle_primary_dav(Request {
         method: "DELETE".into(),
         path: "/carddav/contacts/reopen.vcf".into(),
         headers: vec![("If-Match".into(), etag)],
         body: vec![],
     });
     assert_eq!(archived.status, 204);
-    let mut reopened = App::with_transport(
-        second.config.clone(),
-        second.server.repository.transport.clone(),
-    )
-    .unwrap();
+    let mut reopened =
+        App::with_transport(second.config.clone(), second.transport_snapshot()).unwrap();
     assert_eq!(
         reopened
-            .server
-            .handle(Request {
+            .handle_primary_dav(Request {
                 method: "GET".into(),
                 path: "/carddav/contacts/reopen.vcf".into(),
                 headers: vec![],
@@ -1785,19 +1781,18 @@ fn malformed_write_and_transport_failure_do_not_mutate_remote_state() {
     let mut c = AppConfig::defaults();
     c.space_id = "space".into();
     let mut app = App::with_transport(c, seeded_transport()).unwrap();
-    let malformed = app.server.handle(Request {
+    let malformed = app.handle_primary_dav(Request {
         method: "PUT".into(),
         path: "/carddav/contacts/bad.vcf".into(),
         headers: vec![("Content-Type".into(), "text/vcard".into())],
         body: b"not-vcard".to_vec(),
     });
     assert_eq!(malformed.status, 400);
-    assert!(!app.server.repository.transport.objects.contains_key("bad"));
-    app.server
-        .repository
-        .transport
-        .inject(any_cal_anytype_adapter::TransportError::Timeout);
-    let failed = app.server.handle(Request {
+    assert!(!app.transport_snapshot().objects.contains_key("bad"));
+    app.with_transport_mut(|transport| {
+        transport.inject(any_cal_anytype_adapter::TransportError::Timeout)
+    });
+    let failed = app.handle_primary_dav(Request {
         method: "GET".into(),
         path: "/carddav/contacts/seed-contact.vcf".into(),
         headers: vec![],
@@ -1806,9 +1801,7 @@ fn malformed_write_and_transport_failure_do_not_mutate_remote_state() {
     // A backend timeout must not be mistaken for a missing resource.
     assert_eq!(failed.status, 408);
     assert!(app
-        .server
-        .repository
-        .transport
+        .transport_snapshot()
         .objects
         .contains_key("seed-contact"));
 }
@@ -1838,10 +1831,9 @@ fn fault_matrix_preserves_timeout_protocol_and_recovery_categories() {
         Some(any_cal_observability::ErrorCategory::Protocol)
     );
 
-    app.server
-        .repository
-        .transport
-        .inject(any_cal_anytype_adapter::TransportError::Timeout);
+    app.with_transport_mut(|transport| {
+        transport.inject(any_cal_anytype_adapter::TransportError::Timeout)
+    });
     let timeout = app.handle(Request {
         method: "GET".into(),
         path: "/carddav/contacts/seed-contact.vcf".into(),
@@ -1908,7 +1900,7 @@ fn actual_app_dav_seam_supports_conditional_contact_lifecycle() {
     );
     let mut app = App::with_transport(c, transport).unwrap();
     let body = b"BEGIN:VCARD\nVERSION:4.0\nUID:person\nFN:Alice\nEND:VCARD\n".to_vec();
-    let put = app.server.handle(Request {
+    let put = app.handle_primary_dav(Request {
         method: "PUT".into(),
         path: "/carddav/contacts/person.vcf".into(),
         headers: vec![("Content-Type".into(), "text/vcard".into())],
@@ -1922,7 +1914,7 @@ fn actual_app_dav_seam_supports_conditional_contact_lifecycle() {
         .unwrap()
         .1
         .clone();
-    let get = app.server.handle(Request {
+    let get = app.handle_primary_dav(Request {
         method: "GET".into(),
         path: "/carddav/contacts/person.vcf".into(),
         headers: vec![],
@@ -1933,7 +1925,7 @@ fn actual_app_dav_seam_supports_conditional_contact_lifecycle() {
         String::from_utf8(get.body).unwrap(),
         "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Alice\r\nUID:person\r\nEND:VCARD\r\n"
     );
-    let bad = app.server.handle(Request {
+    let bad = app.handle_primary_dav(Request {
         method: "PUT".into(),
         path: "/carddav/contacts/person.vcf".into(),
         headers: vec![
@@ -1943,7 +1935,7 @@ fn actual_app_dav_seam_supports_conditional_contact_lifecycle() {
         body: body.clone(),
     });
     assert_eq!(bad.status, 412);
-    let deleted = app.server.handle(Request {
+    let deleted = app.handle_primary_dav(Request {
         method: "DELETE".into(),
         path: "/carddav/contacts/person.vcf".into(),
         headers: vec![("If-Match".into(), etag)],
@@ -1951,14 +1943,13 @@ fn actual_app_dav_seam_supports_conditional_contact_lifecycle() {
     });
     assert_eq!(deleted.status, 204);
     assert_eq!(
-        app.server
-            .handle(Request {
-                method: "GET".into(),
-                path: "/carddav/contacts/person.vcf".into(),
-                headers: vec![],
-                body: vec![]
-            })
-            .status,
+        app.handle_primary_dav(Request {
+            method: "GET".into(),
+            path: "/carddav/contacts/person.vcf".into(),
+            headers: vec![],
+            body: vec![]
+        })
+        .status,
         404
     );
 }
@@ -1991,7 +1982,7 @@ fn actual_app_dav_seam_supports_vtodo_task_lifecycle() {
     );
     let mut app = App::with_transport(c, transport).unwrap();
     let body=b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:task-1\r\nSUMMARY:Ship\r\nEND:VTODO\r\nEND:VCALENDAR\r\n".to_vec();
-    let put = app.server.handle(Request {
+    let put = app.handle_primary_dav(Request {
         method: "PUT".into(),
         path: "/caldav/tasks/task-1.ics".into(),
         headers: vec![("Content-Type".into(), "text/calendar".into())],
@@ -1999,14 +1990,13 @@ fn actual_app_dav_seam_supports_vtodo_task_lifecycle() {
     });
     assert_eq!(put.status, 201);
     assert_eq!(
-        app.server
-            .handle(Request {
-                method: "GET".into(),
-                path: "/caldav/tasks/task-1.ics".into(),
-                headers: vec![],
-                body: vec![]
-            })
-            .status,
+        app.handle_primary_dav(Request {
+            method: "GET".into(),
+            path: "/caldav/tasks/task-1.ics".into(),
+            headers: vec![],
+            body: vec![]
+        })
+        .status,
         200
     );
 }

@@ -139,7 +139,7 @@ fn dav_mutation_checkpoint_tombstone_and_restart_are_one_local_flow() {
         .tombstones
         .values()
         .any(|tombstone| tombstone.dav_uid == "local-mutation"));
-    let remote = app.server.repository.transport.clone();
+    let remote = app.transport_snapshot();
     drop(app);
 
     let mut reopened = App::with_transport(config, remote).unwrap();
