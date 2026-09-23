@@ -33,7 +33,10 @@ fn fields(entries: &[(&str, serde_json::Value)]) -> BTreeMap<String, serde_json:
 fn foreign_identity_is_account_space_object_not_uid_or_kind() {
     let a = foreign("space-a", "same-object", Some("uid-a"));
     let b = foreign("space-b", "same-object", Some("uid-a"));
-    assert_ne!(a.identity_fingerprint().unwrap(), b.identity_fingerprint().unwrap());
+    assert_ne!(
+        a.identity_fingerprint().unwrap(),
+        b.identity_fingerprint().unwrap()
+    );
 
     let renamed_uid = foreign("space-a", "same-object", Some("uid-renamed"));
     assert_eq!(
@@ -58,14 +61,8 @@ fn foreign_identity_is_account_space_object_not_uid_or_kind() {
 #[test]
 fn foreign_reference_normalizes_fingerprint_and_rejects_ambiguous_identity() {
     let uppercase = account().to_ascii_uppercase();
-    let reference = ForeignObjectRef::new(
-        uppercase,
-        "space-a",
-        "object-a",
-        DavKind::Contact,
-        None,
-    )
-    .unwrap();
+    let reference =
+        ForeignObjectRef::new(uppercase, "space-a", "object-a", DavKind::Contact, None).unwrap();
     assert_eq!(reference.upstream_account_fingerprint, account());
 
     assert_eq!(
@@ -80,14 +77,7 @@ fn foreign_reference_normalizes_fingerprint_and_rejects_ambiguous_identity() {
         CompositionError::InvalidFingerprint
     );
     assert_eq!(
-        ForeignObjectRef::new(
-            account(),
-            " ",
-            "object-a",
-            DavKind::Contact,
-            None,
-        )
-        .unwrap_err(),
+        ForeignObjectRef::new(account(), " ", "object-a", DavKind::Contact, None,).unwrap_err(),
         CompositionError::InvalidField("source_space_id")
     );
 }
@@ -259,8 +249,7 @@ fn revocation_retains_last_known_source_and_private_content_then_reauthorizes() 
         SourceAvailability::Available,
     )
     .unwrap();
-    let reauthorized =
-        reconcile_source_snapshot(Some(&revoked.reference), &restored).unwrap();
+    let reauthorized = reconcile_source_snapshot(Some(&revoked.reference), &restored).unwrap();
     assert_eq!(reauthorized.kind, RefreshKind::Reauthorized);
     assert!(!reauthorized.reference.source_is_stale());
     assert_eq!(
@@ -284,10 +273,7 @@ fn archive_and_delete_never_erase_destination_user_fields() {
     let mut reference = MaterializedReference::new(&initial).unwrap();
     reference = match apply_destination_mutation(
         &reference,
-        DestinationMutation::ReplaceUserFields(fields(&[(
-            "private_notes",
-            json!("Keep forever"),
-        )])),
+        DestinationMutation::ReplaceUserFields(fields(&[("private_notes", json!("Keep forever"))])),
     )
     .unwrap()
     {
