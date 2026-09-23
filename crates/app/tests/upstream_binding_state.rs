@@ -54,8 +54,7 @@ fn put(app: &mut App, path: &str, name: &str) -> Response {
     app.handle(request(
         "PUT",
         path,
-        format!("BEGIN:VCARD\r\nVERSION:4.0\r\nUID:same\r\nFN:{name}\r\nEND:VCARD\r\n")
-            .as_bytes(),
+        format!("BEGIN:VCARD\r\nVERSION:4.0\r\nUID:same\r\nFN:{name}\r\nEND:VCARD\r\n").as_bytes(),
     ))
 }
 
