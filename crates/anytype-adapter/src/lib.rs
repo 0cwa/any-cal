@@ -204,6 +204,73 @@ pub enum TransportError {
     Other(String),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredSpace {
+    pub id: String,
+    pub name: String,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredType {
+    pub id: String,
+    pub key: String,
+    pub name: String,
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredProperty {
+    pub id: String,
+    #[serde(default)]
+    pub key: Option<String>,
+    pub name: String,
+    pub format: String,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredMember {
+    #[serde(alias = "id")]
+    pub profile_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub global_name: Option<String>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredTag {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredView {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FakeObjectStore {
     objects: BTreeMap<(String, String), ObjectRecord>,
@@ -465,6 +532,40 @@ pub trait AnytypeTransport {
     ) -> Result<ObjectRecord, TransportError>;
 }
 
+pub trait AnytypeDiscoveryTransport {
+    fn list_spaces(
+        &mut self,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredSpace>, TransportError>;
+    fn list_types(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredType>, TransportError>;
+    fn list_properties(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredProperty>, TransportError>;
+    fn list_members(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredMember>, TransportError>;
+    fn list_tags(
+        &mut self,
+        space_id: &str,
+        property_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredTag>, TransportError>;
+    fn list_views(
+        &mut self,
+        space_id: &str,
+        list_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredView>, TransportError>;
+}
+
 /// Minimal synchronous HTTP transport with platform-verified TLS for HTTPS.
 /// Callers must provide credentials explicitly and this type never includes
 /// them in diagnostics.
@@ -601,6 +702,16 @@ fn valid_header_value(value: &str) -> bool {
     !value.chars().any(char::is_control)
 }
 
+fn paginated_path(base: String, offset: Option<&str>) -> Result<String, TransportError> {
+    let offset = offset.unwrap_or("0");
+    if offset.is_empty() || !offset.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(TransportError::InvalidRequest(
+            "pagination offset must be numeric".into(),
+        ));
+    }
+    Ok(format!("{base}?offset={offset}&limit=100"))
+}
+
 fn encode_path_segment(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -659,6 +770,14 @@ impl HttpAnytypeTransport {
     pub fn with_exchange(mut self, exchange: Box<dyn HttpExchange>) -> Self {
         self.exchange = Some(exchange);
         self
+    }
+    fn discovery_page<T: serde::de::DeserializeOwned>(
+        &mut self,
+        path: String,
+    ) -> Result<Page<T>, TransportError> {
+        let response = self.request("GET", &path, None)?;
+        let (data, next_offset) = wire::decode_discovery_list(&response.body)?;
+        Ok(Page { data, next_offset })
     }
     fn request(
         &mut self,
@@ -1023,6 +1142,80 @@ impl AnytypeTransport for HttpAnytypeTransport {
             });
         }
         wire::decode_object(&response.body, Some(space))
+    }
+}
+
+impl AnytypeDiscoveryTransport for HttpAnytypeTransport {
+    fn list_spaces(
+        &mut self,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredSpace>, TransportError> {
+        self.discovery_page(paginated_path("/v1/spaces".into(), offset)?)
+    }
+
+    fn list_types(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredType>, TransportError> {
+        self.discovery_page(paginated_path(
+            format!("/v1/spaces/{}/types", encode_path_segment(space_id)),
+            offset,
+        )?)
+    }
+
+    fn list_properties(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredProperty>, TransportError> {
+        self.discovery_page(paginated_path(
+            format!("/v1/spaces/{}/properties", encode_path_segment(space_id)),
+            offset,
+        )?)
+    }
+
+    fn list_members(
+        &mut self,
+        space_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredMember>, TransportError> {
+        self.discovery_page(paginated_path(
+            format!("/v1/spaces/{}/members", encode_path_segment(space_id)),
+            offset,
+        )?)
+    }
+
+    fn list_tags(
+        &mut self,
+        space_id: &str,
+        property_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredTag>, TransportError> {
+        self.discovery_page(paginated_path(
+            format!(
+                "/v1/spaces/{}/properties/{}/tags",
+                encode_path_segment(space_id),
+                encode_path_segment(property_id)
+            ),
+            offset,
+        )?)
+    }
+
+    fn list_views(
+        &mut self,
+        space_id: &str,
+        list_id: &str,
+        offset: Option<&str>,
+    ) -> Result<Page<DiscoveredView>, TransportError> {
+        self.discovery_page(paginated_path(
+            format!(
+                "/v1/spaces/{}/lists/{}/views",
+                encode_path_segment(space_id),
+                encode_path_segment(list_id)
+            ),
+            offset,
+        )?)
     }
 }
 
