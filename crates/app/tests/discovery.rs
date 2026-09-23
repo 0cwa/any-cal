@@ -227,8 +227,7 @@ fn config() -> AppConfig {
 
 #[test]
 fn capability_discovery_is_binding_scoped_read_only_and_non_authoritative() {
-    let mut app =
-        AppWithTransport::with_transport(config(), DiscoveryTransport::new()).unwrap();
+    let mut app = AppWithTransport::with_transport(config(), DiscoveryTransport::new()).unwrap();
 
     let snapshot = app.discover_domain_capabilities("personal").unwrap();
     assert_eq!(snapshot.domain_id, "personal");
@@ -281,7 +280,8 @@ fn capability_discovery_is_binding_scoped_read_only_and_non_authoritative() {
     assert_eq!(transport.inner.delete_calls, 0);
 
     assert_eq!(
-        app.discover_domain_capabilities("not-configured").unwrap_err(),
+        app.discover_domain_capabilities("not-configured")
+            .unwrap_err(),
         DiscoveryError::UnknownDomain
     );
 
