@@ -193,6 +193,10 @@ impl<T: AnytypeTransport> DomainRepositoryRegistry<T> {
         self.contexts.get_mut(domain_id)
     }
 
+    pub(crate) fn primary_domain_id(&self) -> &str {
+        &self.primary_domain_id
+    }
+
     pub(crate) fn primary(&self) -> &DomainContext<T> {
         self.contexts
             .get(&self.primary_domain_id)
