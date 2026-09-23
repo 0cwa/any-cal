@@ -67,6 +67,7 @@ pub enum AccessDecision {
 pub enum IdentityError {
     InvalidPrincipal,
     InvalidCredentialId,
+    InvalidDomainId,
     InvalidWindow,
     DuplicateCredential,
     Io(String),
@@ -100,8 +101,8 @@ struct Credential {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccessPolicy {
-    collections: BTreeMap<(PrincipalId, CollectionKind), BTreeSet<Operation>>,
-    resources: BTreeMap<(PrincipalId, CollectionKind, String), BTreeSet<Operation>>,
+    collections: BTreeMap<(PrincipalId, String, CollectionKind), BTreeSet<Operation>>,
+    resources: BTreeMap<(PrincipalId, String, CollectionKind, String), BTreeSet<Operation>>,
 }
 
 impl AccessPolicy {
@@ -112,18 +113,39 @@ impl AccessPolicy {
         }
     }
 
+    /// Legacy single-domain convenience. New multi-domain callers should use
+    /// [`Self::grant_domain_collection`] explicitly.
     pub fn grant_collection(
         &mut self,
         principal: PrincipalId,
         collection: CollectionKind,
         operation: Operation,
     ) {
-        self.collections
-            .entry((principal, collection))
-            .or_default()
-            .insert(operation);
+        let inserted =
+            self.grant_domain_collection(principal, legacy_domain_id(), collection, operation);
+        debug_assert!(inserted, "legacy domain id is always valid");
     }
 
+    pub fn grant_domain_collection(
+        &mut self,
+        principal: PrincipalId,
+        domain_id: impl Into<String>,
+        collection: CollectionKind,
+        operation: Operation,
+    ) -> bool {
+        let domain_id = domain_id.into();
+        if !valid_domain_id(&domain_id) {
+            return false;
+        }
+        self.collections
+            .entry((principal, domain_id, collection))
+            .or_default()
+            .insert(operation);
+        true
+    }
+
+    /// Legacy single-domain convenience. New multi-domain callers should use
+    /// [`Self::grant_domain_resource`] explicitly.
     pub fn grant_resource(
         &mut self,
         principal: PrincipalId,
@@ -131,12 +153,37 @@ impl AccessPolicy {
         resource_id: impl Into<String>,
         operation: Operation,
     ) {
-        self.resources
-            .entry((principal, collection, resource_id.into()))
-            .or_default()
-            .insert(operation);
+        let inserted = self.grant_domain_resource(
+            principal,
+            legacy_domain_id(),
+            collection,
+            resource_id,
+            operation,
+        );
+        debug_assert!(inserted, "legacy domain id is always valid");
     }
 
+    pub fn grant_domain_resource(
+        &mut self,
+        principal: PrincipalId,
+        domain_id: impl Into<String>,
+        collection: CollectionKind,
+        resource_id: impl Into<String>,
+        operation: Operation,
+    ) -> bool {
+        let domain_id = domain_id.into();
+        if !valid_domain_id(&domain_id) {
+            return false;
+        }
+        self.resources
+            .entry((principal, domain_id, collection, resource_id.into()))
+            .or_default()
+            .insert(operation);
+        true
+    }
+
+    /// Legacy single-domain convenience for callers that still use the
+    /// synthesized `legacy-default` binding.
     pub fn authorize(
         &self,
         principal: &PrincipalId,
@@ -144,17 +191,46 @@ impl AccessPolicy {
         resource_id: Option<&str>,
         operation: Operation,
     ) -> AccessDecision {
+        self.authorize_domain(
+            principal,
+            legacy_domain_id(),
+            collection,
+            resource_id,
+            operation,
+        )
+    }
+
+    pub fn authorize_domain(
+        &self,
+        principal: &PrincipalId,
+        domain_id: &str,
+        collection: CollectionKind,
+        resource_id: Option<&str>,
+        operation: Operation,
+    ) -> AccessDecision {
+        if !valid_domain_id(domain_id) {
+            return if resource_id.is_some() {
+                AccessDecision::NotFound
+            } else {
+                AccessDecision::Forbidden
+            };
+        }
         let operations = resource_id
             .and_then(|resource_id| {
-                self.resources
-                    .get(&(principal.clone(), collection, resource_id.to_owned()))
+                self.resources.get(&(
+                    principal.clone(),
+                    domain_id.to_owned(),
+                    collection,
+                    resource_id.to_owned(),
+                ))
             })
-            .or_else(|| self.collections.get(&(principal.clone(), collection)));
+            .or_else(|| {
+                self.collections
+                    .get(&(principal.clone(), domain_id.to_owned(), collection))
+            });
         if operations.is_some_and(|operations| operations.contains(&operation)) {
             return AccessDecision::Allowed;
         }
-        // A caller must not learn whether a resource exists when it has no
-        // read capability for that resource or collection.
         if resource_id.is_some() {
             AccessDecision::NotFound
         } else {
@@ -163,6 +239,14 @@ impl AccessPolicy {
     }
 
     pub fn capabilities(&self, principal: &PrincipalId) -> BTreeSet<Capability> {
+        self.capabilities_for_domain(principal, legacy_domain_id())
+    }
+
+    pub fn capabilities_for_domain(
+        &self,
+        principal: &PrincipalId,
+        domain_id: &str,
+    ) -> BTreeSet<Capability> {
         [
             (CollectionKind::Contacts, Capability::ReadContacts),
             (CollectionKind::Contacts, Capability::WriteContacts),
@@ -175,7 +259,8 @@ impl AccessPolicy {
                 Capability::ReadContacts | Capability::ReadTasks => Operation::Read,
                 Capability::WriteContacts | Capability::WriteTasks => Operation::Write,
             };
-            (self.authorize(principal, collection, None, operation) == AccessDecision::Allowed)
+            (self.authorize_domain(principal, domain_id, collection, None, operation)
+                == AccessDecision::Allowed)
                 .then_some(capability)
         })
         .collect()
@@ -270,12 +355,22 @@ impl IdentityStore {
             .map_or(AuthOutcome::Invalid, |(_, outcome)| outcome)
     }
 
-    /// Return only non-sensitive policy metadata. Credential IDs and tokens
-    /// are intentionally excluded from this capability view.
+    /// Return only non-sensitive policy metadata for the legacy synthesized
+    /// domain. Credential IDs and tokens are intentionally excluded.
     pub fn capabilities(&self, token: &str, now: i64) -> BTreeSet<Capability> {
+        self.capabilities_for_domain(token, now, legacy_domain_id())
+    }
+
+    pub fn capabilities_for_domain(
+        &self,
+        token: &str,
+        now: i64,
+        domain_id: &str,
+    ) -> BTreeSet<Capability> {
         match self.authenticate(token, now) {
             Some((principal, AuthOutcome::Authenticated)) => {
-                let policy_capabilities = self.policy.capabilities(&principal);
+                let policy_capabilities =
+                    self.policy.capabilities_for_domain(&principal, domain_id);
                 let supplied = digest(token);
                 let credential = self
                     .credentials
@@ -377,6 +472,8 @@ struct CredentialSnapshot {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CollectionGrant {
     principal: String,
+    #[serde(default = "legacy_domain_owned")]
+    domain_id: String,
     collection: CollectionKind,
     operations: BTreeSet<Operation>,
 }
@@ -384,6 +481,8 @@ struct CollectionGrant {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ResourceGrant {
     principal: String,
+    #[serde(default = "legacy_domain_owned")]
+    domain_id: String,
     collection: CollectionKind,
     resource_id: String,
     operations: BTreeSet<Operation>,
@@ -392,7 +491,7 @@ struct ResourceGrant {
 impl Snapshot {
     fn from_store(store: &IdentityStore) -> Self {
         Self {
-            version: 1,
+            version: 2,
             credentials: store
                 .credentials
                 .values()
@@ -410,19 +509,23 @@ impl Snapshot {
                 .policy
                 .collections
                 .iter()
-                .map(|((principal, collection), operations)| CollectionGrant {
-                    principal: principal.as_str().to_owned(),
-                    collection: *collection,
-                    operations: operations.clone(),
-                })
+                .map(
+                    |((principal, domain_id, collection), operations)| CollectionGrant {
+                        principal: principal.as_str().to_owned(),
+                        domain_id: domain_id.clone(),
+                        collection: *collection,
+                        operations: operations.clone(),
+                    },
+                )
                 .collect(),
             resources: store
                 .policy
                 .resources
                 .iter()
                 .map(
-                    |((principal, collection, resource_id), operations)| ResourceGrant {
+                    |((principal, domain_id, collection, resource_id), operations)| ResourceGrant {
                         principal: principal.as_str().to_owned(),
+                        domain_id: domain_id.clone(),
                         collection: *collection,
                         resource_id: resource_id.clone(),
                         operations: operations.clone(),
@@ -433,7 +536,7 @@ impl Snapshot {
     }
 
     fn into_store(self) -> Result<IdentityStore, IdentityError> {
-        if self.version != 1 {
+        if !matches!(self.version, 1 | 2) {
             return Err(IdentityError::Corrupt(
                 "unsupported identity snapshot version".into(),
             ));
@@ -441,8 +544,22 @@ impl Snapshot {
         let mut policy = AccessPolicy::new();
         for grant in self.collections {
             let principal = PrincipalId::new(grant.principal)?;
+            if !valid_domain_id(&grant.domain_id) {
+                return Err(IdentityError::Corrupt(
+                    "invalid authorization domain id".into(),
+                ));
+            }
             for operation in grant.operations {
-                policy.grant_collection(principal.clone(), grant.collection, operation);
+                if !policy.grant_domain_collection(
+                    principal.clone(),
+                    grant.domain_id.clone(),
+                    grant.collection,
+                    operation,
+                ) {
+                    return Err(IdentityError::Corrupt(
+                        "invalid authorization domain id".into(),
+                    ));
+                }
             }
         }
         for grant in self.resources {
@@ -450,13 +567,23 @@ impl Snapshot {
             if grant.resource_id.is_empty() {
                 return Err(IdentityError::Corrupt("empty resource id".into()));
             }
+            if !valid_domain_id(&grant.domain_id) {
+                return Err(IdentityError::Corrupt(
+                    "invalid authorization domain id".into(),
+                ));
+            }
             for operation in grant.operations {
-                policy.grant_resource(
+                if !policy.grant_domain_resource(
                     principal.clone(),
+                    grant.domain_id.clone(),
                     grant.collection,
                     grant.resource_id.clone(),
                     operation,
-                );
+                ) {
+                    return Err(IdentityError::Corrupt(
+                        "invalid authorization domain id".into(),
+                    ));
+                }
             }
         }
         let mut store = IdentityStore::new(policy);
@@ -497,6 +624,24 @@ impl Snapshot {
         }
         Ok(store)
     }
+}
+
+const LEGACY_DOMAIN_ID: &str = "legacy-default";
+
+fn legacy_domain_id() -> &'static str {
+    LEGACY_DOMAIN_ID
+}
+
+fn legacy_domain_owned() -> String {
+    LEGACY_DOMAIN_ID.to_owned()
+}
+
+fn valid_domain_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && !value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
 }
 
 fn io_string(error: io::Error) -> IdentityError {
