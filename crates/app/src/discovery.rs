@@ -178,9 +178,8 @@ where
             .space_id
             .clone();
         let mut views = collect_pages(|offset| {
-            self.registry.with_transport_mut(|transport| {
-                transport.list_views(&space_id, list_id, offset)
-            })
+            self.registry
+                .with_transport_mut(|transport| transport.list_views(&space_id, list_id, offset))
         })?;
         views.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(views)
