@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 mod admin;
+pub mod composition;
 mod config;
 pub mod discovery;
 mod domain_registry;
@@ -1925,6 +1926,8 @@ fn capability_for(collection: CollectionKind, operation: Operation) -> Capabilit
         (CollectionKind::Contacts, Operation::Write) => Capability::WriteContacts,
         (CollectionKind::Tasks, Operation::Read) => Capability::ReadTasks,
         (CollectionKind::Tasks, Operation::Write) => Capability::WriteTasks,
+        (CollectionKind::Composition, Operation::Read) => Capability::ReadComposition,
+        (CollectionKind::Composition, Operation::Write) => Capability::WriteComposition,
     }
 }
 
