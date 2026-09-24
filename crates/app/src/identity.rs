@@ -39,6 +39,10 @@ impl PrincipalId {
 pub enum CollectionKind {
     Contacts,
     Tasks,
+    /// Destination-local materialized references/facets. This is deliberately
+    /// separate from DAV Contacts/Tasks so composition permission never
+    /// advertises or implies a second canonical DAV resource.
+    Composition,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -90,6 +94,8 @@ pub enum Capability {
     WriteContacts,
     ReadTasks,
     WriteTasks,
+    ReadComposition,
+    WriteComposition,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -252,12 +258,18 @@ impl AccessPolicy {
             (CollectionKind::Contacts, Capability::WriteContacts),
             (CollectionKind::Tasks, Capability::ReadTasks),
             (CollectionKind::Tasks, Capability::WriteTasks),
+            (CollectionKind::Composition, Capability::ReadComposition),
+            (CollectionKind::Composition, Capability::WriteComposition),
         ]
         .into_iter()
         .filter_map(|(collection, capability)| {
             let operation = match capability {
-                Capability::ReadContacts | Capability::ReadTasks => Operation::Read,
-                Capability::WriteContacts | Capability::WriteTasks => Operation::Write,
+                Capability::ReadContacts | Capability::ReadTasks | Capability::ReadComposition => {
+                    Operation::Read
+                }
+                Capability::WriteContacts
+                | Capability::WriteTasks
+                | Capability::WriteComposition => Operation::Write,
             };
             (self.authorize_domain(principal, domain_id, collection, None, operation)
                 == AccessDecision::Allowed)
