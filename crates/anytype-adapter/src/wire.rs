@@ -238,12 +238,20 @@ pub fn decode_object(
 }
 
 pub fn encode_create(object: &ObjectRecord) -> Result<String, TransportError> {
-    let value = object_to_wire(object, Operation::Create)?;
+    encode_create_with_type(object, crate::DEFAULT_OBJECT_TYPE_KEY)
+}
+
+pub fn encode_create_with_type(
+    object: &ObjectRecord,
+    type_key: &str,
+) -> Result<String, TransportError> {
+    validate_type_key(type_key)?;
+    let value = object_to_wire(object, Operation::Create, Some(type_key))?;
     serde_json::to_string(&value).map_err(|_| TransportError::Malformed)
 }
 
 pub fn encode_update(object: &ObjectRecord) -> Result<String, TransportError> {
-    let value = object_to_wire(object, Operation::Update)?;
+    let value = object_to_wire(object, Operation::Update, None)?;
     serde_json::to_string(&value).map_err(|_| TransportError::Malformed)
 }
 
@@ -256,6 +264,7 @@ enum Operation {
 fn object_to_wire(
     object: &ObjectRecord,
     operation: Operation,
+    create_type_key: Option<&str>,
 ) -> Result<Map<String, Value>, TransportError> {
     if object.id.is_empty() {
         return Err(TransportError::InvalidRequest(
@@ -276,7 +285,14 @@ fn object_to_wire(
         value.insert("name".into(), Value::String(name));
     }
     if operation == Operation::Create {
-        value.insert("type_key".into(), Value::String("page".into()));
+        value.insert(
+            "type_key".into(),
+            Value::String(
+                create_type_key
+                    .expect("create type key is supplied by encode_create")
+                    .to_owned(),
+            ),
+        );
     }
     value.insert(
         "properties".into(),
@@ -367,6 +383,20 @@ fn decode_markdown_body(body: String) -> String {
 fn is_markdown_fence(body: &str) -> bool {
     let trimmed = body.trim();
     trimmed.starts_with("```") && trimmed.ends_with("```")
+}
+
+fn validate_type_key(type_key: &str) -> Result<(), TransportError> {
+    if type_key.is_empty()
+        || type_key.len() > 128
+        || type_key
+            .bytes()
+            .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')))
+    {
+        return Err(TransportError::InvalidRequest(
+            "object type key is invalid".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn value_to_string(value: &Value) -> Option<String> {
