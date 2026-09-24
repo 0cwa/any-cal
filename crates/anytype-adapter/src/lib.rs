@@ -551,7 +551,6 @@ impl AnytypeTypedTransport for FakeAnytypeTransport {
     }
 }
 
-
 pub trait AnytypeDiscoveryTransport {
     fn list_spaces(
         &mut self,
