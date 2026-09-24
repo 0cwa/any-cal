@@ -1502,7 +1502,7 @@ fn required_audit_configuration_fails_before_startup_and_optional_mode_is_ready(
         body: vec![],
     });
     assert_eq!(ready.status, 200);
-    assert_eq!(ready.body, b"{\"status\":\"healthy\",\"ready\":true,\"space_configured\":true,\"contacts_collection_configured\":true,\"tasks_collection_configured\":true,\"transport\":\"fake\",\"upstream\":{\"mode\":\"fake\",\"configured\":true,\"tested\":true,\"ready\":true,\"status\":\"ready\",\"error\":null},\"cache\":\"rebuildable\",\"events\":0,\"failures\":0,\"last_error\":null,\"recovery\":\"sync-checkpoint\" }".to_vec());
+    assert_eq!(ready.body, b"{\"status\":\"healthy\",\"ready\":true,\"space_configured\":true,\"contacts_collection_configured\":true,\"tasks_collection_configured\":true,\"transport\":\"fake\",\"upstream\":{\"mode\":\"fake\",\"configured\":true,\"tested\":true,\"ready\":true,\"status\":\"ready\",\"error\":null},\"schema\":{\"status\":\"not_discovered\",\"ready\":false,\"body_only_available\":true,\"configured_domains\":1,\"discovered_domains\":0},\"cache\":\"rebuildable\",\"events\":0,\"failures\":0,\"last_error\":null,\"recovery\":\"sync-checkpoint\" }".to_vec());
 }
 
 #[test]
