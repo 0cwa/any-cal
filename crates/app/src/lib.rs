@@ -21,6 +21,7 @@ use serde::Serialize;
 mod admin;
 pub mod composition;
 pub mod composition_orchestration;
+pub mod person_context;
 mod config;
 pub mod discovery;
 mod domain_registry;
