@@ -64,6 +64,63 @@ compare body/code block, file payload, and a system-managed linked child
 object. No candidate is canonical until this test passes; see
 [architecture-research.md](architecture-research.md).
 
+## Cross-Space materialized references and personal facets
+
+Cross-Space composition does not create another canonical DAV object. A destination
+Space may contain a local materialized reference/facet that combines a bounded source
+cache with destination-user-owned private fields. See
+[cross-space-composition.md](cross-space-composition.md).
+
+### Foreign source identity
+
+Durable foreign identity is:
+
+```text
+source_account_fingerprint
+source_space_id
+source_object_id
+source_kind
+source_dav_uid              # optional correlation only
+```
+
+Do not use binding fingerprint, display name, email/title, or DAV UID alone to retarget
+a reference. Routing provenance such as source domain may be retained separately, but a
+domain/configuration change is not itself a foreign-identity change.
+
+### Field ownership
+
+Materialized schemas distinguish:
+
+- **source-owned** bounded cached fields refreshed by Any-Cal;
+- **destination-user-owned** body/notes/tags/local relations, never overwritten by refresh;
+- **derived** availability/staleness state;
+- **local overrides** such as an explicit private title.
+
+Missing or wrong-format schema falls back to a reduced/body-only representation rather
+than coercing a private field into source ownership.
+
+### Person Context
+
+A Person Context is a private local facet for a canonical Contact and is not exposed as
+an additional CardDAV contact by default.
+
+Candidate source-owned cache: exact foreign identity, source display name, bounded
+emails/phones/organization, DAV UID correlation, and source availability. Candidate
+destination-owned fields include private notes/body, personal tags, follow-up state,
+same-Space local relations, and a local title override.
+
+### Event Reference and Daily Plan
+
+An Event Reference is a private local reference for a canonical VEVENT. Candidate
+source cache includes title, start/end/all-day, timezone/floating summary,
+location/status, exact foreign identity, and availability. Canonical VEVENT recurrence
+and timezone semantics remain authoritative.
+
+A Daily Plan is destination-owned, not a DAV calendar resource. Its deterministic
+identity includes principal scope + destination domain + local date + schema/version.
+It relates to same-Space Event Reference objects. Recurring occurrence identity must be
+explicit and is finalized with VEVENT recurrence semantics.
+
 ## Contacts and Contact Groups (CardDAV)
 
 `Contact` and `Contact Group` are separate Anytype Types.  Both are CardDAV

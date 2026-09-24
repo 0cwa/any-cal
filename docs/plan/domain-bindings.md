@@ -50,6 +50,25 @@ New deployments can instead use one domain per contact book, task list, or calen
 - Lifecycle state is not part of the fingerprint; a temporary access failure must not
   create a new durable identity.
 
+## Boundary with cross-Space composition
+
+A `DomainBinding` answers only where a canonical DAV domain lives. It does not
+encode a principal's private composition preferences, a Personal Context, an Event
+Reference, a Daily Plan, or a dynamic list of Spaces a request may choose.
+
+Composition is a separate principal-scoped contract. It resolves configured domain IDs
+through the repository registry, may read several already-authorized source contexts,
+and writes exactly one explicitly configured private/home destination context. Request
+data never supplies or overrides source/destination Space IDs.
+
+The durable identity of a foreign source object is upstream account context + source
+Space ID + source object ID. A binding fingerprint remains routing/configuration
+identity and may legitimately change without making the foreign object a new object.
+
+Changing a composition profile therefore must not alter canonical DAV resource identity,
+binding fingerprints, checkpoint namespaces, or migration state. See
+[cross-space-composition.md](cross-space-composition.md).
+
 ## Legacy compatibility
 
 The existing scalar configuration:
