@@ -87,20 +87,14 @@ pub fn effective_person_context_title(reference: &MaterializedReference) -> Opti
         })
 }
 
-fn first_value(
-    fields: &BTreeMap<String, Vec<crate::Occurrence>>,
-    key: &str,
-) -> Option<String> {
+fn first_value(fields: &BTreeMap<String, Vec<crate::Occurrence>>, key: &str) -> Option<String> {
     fields
         .get(key)
         .and_then(|values| values.iter().find(|value| !value.value.trim().is_empty()))
         .map(|value| bounded_text(&value.value))
 }
 
-fn bounded_values(
-    fields: &BTreeMap<String, Vec<crate::Occurrence>>,
-    key: &str,
-) -> Vec<String> {
+fn bounded_values(fields: &BTreeMap<String, Vec<crate::Occurrence>>, key: &str) -> Vec<String> {
     fields
         .get(key)
         .into_iter()
