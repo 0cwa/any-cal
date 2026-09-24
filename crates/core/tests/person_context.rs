@@ -3,9 +3,8 @@ use any_cal_core::{
     typed_etag_for_bytes, AnytypeObjectId, CanonicalDocument, CollectionId, DavKind, DavUid,
     ForeignObjectRef, MaterializedReference, ModifiedAt, Occurrence, PersonContextProjectionError,
     ResourceEnvelope, ResourceId, SourceAvailability, SourceSnapshot, StoredResource,
-    StructuredDocument, PERSON_CONTEXT_DAV_UID, PERSON_CONTEXT_DISPLAY_NAME,
-    PERSON_CONTEXT_EMAILS, PERSON_CONTEXT_ORGANIZATIONS, PERSON_CONTEXT_PHONES,
-    PERSON_CONTEXT_TITLE_OVERRIDE,
+    StructuredDocument, PERSON_CONTEXT_DAV_UID, PERSON_CONTEXT_DISPLAY_NAME, PERSON_CONTEXT_EMAILS,
+    PERSON_CONTEXT_ORGANIZATIONS, PERSON_CONTEXT_PHONES, PERSON_CONTEXT_TITLE_OVERRIDE,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -22,10 +21,16 @@ fn stored(kind: DavKind, name: &str) -> StoredResource {
     );
     document.insert(
         "TEL",
-        vec![Occurrence::new("+1-555-0100"), Occurrence::new("+1-555-0101")],
+        vec![
+            Occurrence::new("+1-555-0100"),
+            Occurrence::new("+1-555-0101"),
+        ],
     );
     document.insert("ORG", vec![Occurrence::new("Example Org")]);
-    document.insert("NOTE", vec![Occurrence::new("canonical note stays source-only")]);
+    document.insert(
+        "NOTE",
+        vec![Occurrence::new("canonical note stays source-only")],
+    );
 
     StoredResource {
         envelope: ResourceEnvelope {
@@ -56,7 +61,8 @@ fn foreign() -> ForeignObjectRef {
 
 #[test]
 fn contact_projection_is_small_source_owned_and_ignores_private_or_opaque_fields() {
-    let projected = project_person_context_source(&stored(DavKind::Contact, "Carol Smith")).unwrap();
+    let projected =
+        project_person_context_source(&stored(DavKind::Contact, "Carol Smith")).unwrap();
 
     assert_eq!(projected[PERSON_CONTEXT_DISPLAY_NAME], "Carol Smith");
     assert_eq!(
@@ -154,7 +160,6 @@ fn source_rename_updates_default_title_but_never_overwrites_local_title_override
         "Carol · Private"
     );
 }
-
 
 #[test]
 fn two_principals_keep_independent_private_facets_for_the_same_shared_contact() {
