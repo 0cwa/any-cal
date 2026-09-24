@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 pub mod wire;
 
 pub const API_VERSION: &str = "2025-11-08";
+pub const DEFAULT_OBJECT_TYPE_KEY: &str = "page";
 /// Anytype currently accepts unconditional writes and does not expose a
 /// usable revision/ETag precondition.  Keep this policy explicit so callers
 /// do not accidentally imply optimistic-concurrency guarantees.
@@ -530,6 +531,24 @@ pub trait AnytypeTransport {
         space_id: &str,
         object_id: &str,
     ) -> Result<ObjectRecord, TransportError>;
+}
+pub trait AnytypeTypedTransport: AnytypeTransport {
+    fn create_object_with_type(
+        &mut self,
+        object: ObjectRecord,
+        type_key: &str,
+    ) -> Result<ObjectRecord, TransportError>;
+}
+
+impl AnytypeTypedTransport for FakeAnytypeTransport {
+    fn create_object_with_type(
+        &mut self,
+        object: ObjectRecord,
+        type_key: &str,
+    ) -> Result<ObjectRecord, TransportError> {
+        wire::encode_create_with_type(&object, type_key)?;
+        self.create_object(object)
+    }
 }
 
 pub trait AnytypeDiscoveryTransport {
@@ -1070,16 +1089,11 @@ impl AnytypeTransport for HttpAnytypeTransport {
         wire::decode_object(&response.body, Some(space))
     }
     fn create_object(&mut self, object: ObjectRecord) -> Result<ObjectRecord, TransportError> {
-        let body = wire::encode_create(&object)?;
-        let response = self.request(
-            "POST",
-            &format!(
-                "/v1/spaces/{}/objects",
-                encode_path_segment(&object.space_id)
-            ),
-            Some(&body),
-        )?;
-        wire::decode_object(&response.body, Some(&object.space_id))
+        <Self as AnytypeTypedTransport>::create_object_with_type(
+            self,
+            object,
+            DEFAULT_OBJECT_TYPE_KEY,
+        )
     }
     fn update_object(&mut self, object: ObjectRecord) -> Result<ObjectRecord, TransportError> {
         let body = wire::encode_update(&object)?;
@@ -1216,6 +1230,25 @@ impl AnytypeDiscoveryTransport for HttpAnytypeTransport {
             ),
             offset,
         )?)
+    }
+}
+
+impl AnytypeTypedTransport for HttpAnytypeTransport {
+    fn create_object_with_type(
+        &mut self,
+        object: ObjectRecord,
+        type_key: &str,
+    ) -> Result<ObjectRecord, TransportError> {
+        let body = wire::encode_create_with_type(&object, type_key)?;
+        let response = self.request(
+            "POST",
+            &format!(
+                "/v1/spaces/{}/objects",
+                encode_path_segment(&object.space_id)
+            ),
+            Some(&body),
+        )?;
+        wire::decode_object(&response.body, Some(&object.space_id))
     }
 }
 

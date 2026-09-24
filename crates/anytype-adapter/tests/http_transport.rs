@@ -1,5 +1,6 @@
 use any_cal_anytype_adapter::{
-    AnytypeDiscoveryTransport, AnytypeTransport, HttpAnytypeTransport, TransportError, API_VERSION,
+    AnytypeDiscoveryTransport, AnytypeTransport, AnytypeTypedTransport, HttpAnytypeTransport,
+    TransportError, API_VERSION,
 };
 use any_cal_core::RepositoryError;
 use rcgen::generate_simple_self_signed;
@@ -68,6 +69,18 @@ struct FailingExchange;
 impl any_cal_anytype_adapter::HttpExchange for FailingExchange {
     fn exchange(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
         Err(TransportError::Timeout)
+    }
+}
+
+struct TypeCheckingExchange;
+impl any_cal_anytype_adapter::HttpExchange for TypeCheckingExchange {
+    fn exchange(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        let text = String::from_utf8(request.to_vec()).unwrap();
+        assert!(text.starts_with("POST /v1/spaces/space/objects HTTP/1.1\r\n"));
+        assert!(text.contains("\"type_key\":\"anycal_person_context\""));
+        assert!(text.contains("Anytype-Version: 2025-11-08"));
+        assert!(text.contains("Authorization: Bearer secret"));
+        Ok(json_response(200, &object_json()))
     }
 }
 
@@ -598,4 +611,27 @@ fn discovery_pagination_and_invalid_offsets_are_bounded() {
         invalid.list_types("space", Some("1&limit=999")),
         Err(TransportError::InvalidRequest(_))
     ));
+}
+
+#[test]
+fn typed_create_sends_explicit_type_key_and_rejects_invalid_keys_before_exchange() {
+    let mut transport =
+        HttpAnytypeTransport::new("http://127.0.0.1:1", API_VERSION, Some("secret".into()))
+            .unwrap()
+            .with_exchange(Box::new(TypeCheckingExchange));
+    let created = transport
+        .create_object_with_type(object_record(), "anycal_person_context")
+        .unwrap();
+    assert_eq!(created.id, "obj");
+
+    let mut invalid =
+        HttpAnytypeTransport::new("http://127.0.0.1:1", API_VERSION, Some("secret".into()))
+            .unwrap()
+            .with_exchange(Box::new(FailingExchange));
+    assert_eq!(
+        invalid.create_object_with_type(object_record(), "bad type"),
+        Err(TransportError::InvalidRequest(
+            "object type key is invalid".into()
+        ))
+    );
 }
