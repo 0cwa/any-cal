@@ -333,8 +333,9 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                 }
                 None => {
                     let placeholder_id = format!(
-                        "anycal-ref-{}",
-                        identity.chars().take(32).collect::<String>()
+                        "anycal-ref-{}-{}",
+                        profile_fingerprint.chars().take(12).collect::<String>(),
+                        identity.chars().take(20).collect::<String>()
                     );
                     let destination_space = self
                         .registry
