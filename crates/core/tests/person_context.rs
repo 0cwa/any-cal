@@ -154,3 +154,59 @@ fn source_rename_updates_default_title_but_never_overwrites_local_title_override
         "Carol · Private"
     );
 }
+
+
+#[test]
+fn two_principals_keep_independent_private_facets_for_the_same_shared_contact() {
+    let initial_stored = stored(DavKind::Contact, "Carol Shared");
+    let initial = SourceSnapshot::new(
+        foreign(),
+        project_person_context_source(&initial_stored).unwrap(),
+        SourceAvailability::Available,
+    )
+    .unwrap();
+
+    let mut alice = MaterializedReference::new(&initial).unwrap();
+    alice
+        .user_fields
+        .insert("private_notes".into(), json!("Alice note"));
+    alice
+        .user_fields
+        .insert(PERSON_CONTEXT_TITLE_OVERRIDE.into(), json!("Carol · Alice"));
+
+    let mut bob = MaterializedReference::new(&initial).unwrap();
+    bob.user_fields
+        .insert("private_notes".into(), json!("Bob note"));
+
+    let updated_stored = stored(DavKind::Contact, "Carol Renamed");
+    let updated = SourceSnapshot::new(
+        foreign(),
+        project_person_context_source(&updated_stored).unwrap(),
+        SourceAvailability::Available,
+    )
+    .unwrap();
+
+    let alice = reconcile_source_snapshot(Some(&alice), &updated)
+        .unwrap()
+        .reference;
+    let bob = reconcile_source_snapshot(Some(&bob), &updated)
+        .unwrap()
+        .reference;
+
+    assert_eq!(alice.source_fields, bob.source_fields);
+    assert_eq!(
+        alice.source_fields[PERSON_CONTEXT_DISPLAY_NAME],
+        "Carol Renamed"
+    );
+    assert_eq!(alice.user_fields["private_notes"], "Alice note");
+    assert_eq!(bob.user_fields["private_notes"], "Bob note");
+    assert_eq!(
+        effective_person_context_title(&alice).as_deref(),
+        Some("Carol · Alice")
+    );
+    assert_eq!(
+        effective_person_context_title(&bob).as_deref(),
+        Some("Carol Renamed")
+    );
+    assert_ne!(alice.user_fields, bob.user_fields);
+}
