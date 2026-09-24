@@ -1,5 +1,5 @@
 use any_cal_anytype_adapter::{
-    AnytypeTransport, HttpAnytypeTransport, TransportError, API_VERSION,
+    AnytypeDiscoveryTransport, AnytypeTransport, HttpAnytypeTransport, TransportError, API_VERSION,
 };
 use any_cal_core::RepositoryError;
 use rcgen::generate_simple_self_signed;
@@ -486,4 +486,116 @@ fn pagination_advances_offsets_deterministically() {
         .list_objects("space", first.next_offset.as_deref())
         .unwrap();
     assert!(second.next_offset.is_none());
+}
+
+#[test]
+fn discovery_uses_stable_v1_space_scoped_read_only_endpoints() {
+    let scripted = Scripted {
+        expected: [
+            "GET /v1/spaces?offset=0&limit=100 HTTP/1.1",
+            "GET /v1/spaces/space%20one/types?offset=0&limit=100 HTTP/1.1",
+            "GET /v1/spaces/space%20one/properties?offset=0&limit=100 HTTP/1.1",
+            "GET /v1/spaces/space%20one/members?offset=0&limit=100 HTTP/1.1",
+            "GET /v1/spaces/space%20one/properties/prop%2Ftags/tags?offset=0&limit=100 HTTP/1.1",
+            "GET /v1/spaces/space%20one/lists/list%2F1/views?offset=0&limit=100 HTTP/1.1",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        responses: [
+            json_response(
+                200,
+                r#"{"data":[{"id":"space one","name":"Personal","is_owner":true}],"pagination":{"has_more":false,"offset":0,"limit":100,"total":1}}"#,
+            ),
+            json_response(
+                200,
+                r#"{"data":[{"id":"type-1","key":"task","name":"Task","layout":"task","archived":false}],"pagination":{"has_more":false,"offset":0,"limit":100,"total":1}}"#,
+            ),
+            json_response(
+                200,
+                r#"{"data":[{"id":"prop/tags","key":"done","name":"Done","format":"checkbox","hidden":false}],"pagination":{"has_more":false,"offset":0,"limit":100,"total":1}}"#,
+            ),
+            json_response(
+                200,
+                r#"{"data":[{"id":"profile-1","name":"Alice","global_name":"alice.any","status":"active","role":"Viewer","identity":"network-id"}],"pagination":{"has_more":false,"offset":0,"limit":100,"total":1}}"#,
+            ),
+            json_response(
+                200,
+                r#"{"data":[{"id":"tag-1","name":"Urgent","color":"red","objects_count":2}],"pagination":{"has_more":false,"offset":0,"limit":100,"total":1}}"#,
+            ),
+            json_response(
+                200,
+                r#"{"data":[{"id":"view-1","name":"Table","layout":"table","filters":[]}],"pagination":{"has_more":false,"offset":0,"limit":100,"total":1}}"#,
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let mut transport =
+        HttpAnytypeTransport::new("http://127.0.0.1:1", API_VERSION, Some("secret".into()))
+            .unwrap()
+            .with_exchange(Box::new(scripted));
+
+    let spaces = transport.list_spaces(None).unwrap();
+    assert_eq!(spaces.data[0].id, "space one");
+    assert_eq!(spaces.data[0].name, "Personal");
+    assert_eq!(spaces.data[0].extra["is_owner"], true);
+
+    let types = transport.list_types("space one", None).unwrap();
+    assert_eq!(types.data[0].id, "type-1");
+    assert_eq!(types.data[0].key, "task");
+    assert_eq!(types.data[0].layout.as_deref(), Some("task"));
+    assert_eq!(types.data[0].extra["archived"], false);
+
+    let properties = transport.list_properties("space one", None).unwrap();
+    assert_eq!(properties.data[0].id, "prop/tags");
+    assert_eq!(properties.data[0].key.as_deref(), Some("done"));
+    assert_eq!(properties.data[0].format, "checkbox");
+    assert_eq!(properties.data[0].extra["hidden"], false);
+
+    let members = transport.list_members("space one", None).unwrap();
+    assert_eq!(members.data[0].profile_id, "profile-1");
+    assert_eq!(members.data[0].global_name.as_deref(), Some("alice.any"));
+    assert_eq!(members.data[0].role, "Viewer");
+    assert_eq!(members.data[0].extra["identity"], "network-id");
+
+    let tags = transport.list_tags("space one", "prop/tags", None).unwrap();
+    assert_eq!(tags.data[0].id, "tag-1");
+    assert_eq!(tags.data[0].color.as_deref(), Some("red"));
+    assert_eq!(tags.data[0].extra["objects_count"], 2);
+
+    let views = transport.list_views("space one", "list/1", None).unwrap();
+    assert_eq!(views.data[0].id, "view-1");
+    assert_eq!(views.data[0].layout.as_deref(), Some("table"));
+    assert_eq!(views.data[0].extra["filters"], serde_json::json!([]));
+}
+
+#[test]
+fn discovery_pagination_and_invalid_offsets_are_bounded() {
+    let scripted = Scripted {
+        expected: ["GET /v1/spaces/space/types?offset=0&limit=100 HTTP/1.1".into()]
+            .into_iter()
+            .collect(),
+        responses: [json_response(
+            200,
+            r#"{"data":[{"id":"type-1","key":"page","name":"Page"}],"pagination":{"has_more":true,"offset":0,"limit":100,"total":2}}"#,
+        )]
+        .into_iter()
+        .collect(),
+    };
+    let mut transport =
+        HttpAnytypeTransport::new("http://127.0.0.1:1", API_VERSION, Some("secret".into()))
+            .unwrap()
+            .with_exchange(Box::new(scripted));
+    let page = transport.list_types("space", None).unwrap();
+    assert_eq!(page.next_offset.as_deref(), Some("1"));
+
+    let mut invalid =
+        HttpAnytypeTransport::new("http://127.0.0.1:1", API_VERSION, Some("secret".into()))
+            .unwrap()
+            .with_exchange(Box::new(FailingExchange));
+    assert!(matches!(
+        invalid.list_types("space", Some("1&limit=999")),
+        Err(TransportError::InvalidRequest(_))
+    ));
 }
