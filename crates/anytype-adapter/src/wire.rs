@@ -149,6 +149,7 @@ pub struct WirePagination {
 }
 
 #[derive(Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
 struct WireDiscoveryList<T> {
     #[serde(default)]
     data: Vec<T>,
