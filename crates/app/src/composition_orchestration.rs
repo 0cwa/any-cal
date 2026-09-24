@@ -162,6 +162,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             .map_err(CompositionOrchestrationError::Authorization)?;
 
         let mut existing = self.scan_destination_materialized(&plan.destination_domain_id)?;
+        existing.retain(|loaded| loaded.record.profile_fingerprint == plan.profile_fingerprint);
         let mut by_correlation = BTreeMap::<CorrelationKey, usize>::new();
         let mut by_identity = BTreeMap::<String, usize>::new();
         for (index, loaded) in existing.iter().enumerate() {
@@ -571,6 +572,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                 .ok()
                 .as_deref()
                 == Some(expected_identity.as_str())
+                && candidate.record.profile_fingerprint == expected.profile_fingerprint
                 && candidate.record.source_domain_id == expected.source_domain_id
                 && candidate.record.source_resource_id == expected.source_resource_id
         });
