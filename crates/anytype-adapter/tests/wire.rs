@@ -174,6 +174,18 @@ fn create_and_update_dtos_have_pinned_fields_and_typed_property_shape() {
     assert!(update.get("type_key").is_none());
     assert!(update.get("id").is_none());
     assert!(update.get("space_id").is_none());
+
+    let typed: serde_json::Value = serde_json::from_str(
+        &wire::encode_create_with_type(&record(), "anycal_person_context").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(typed["type_key"], "anycal_person_context");
+    assert_eq!(
+        wire::encode_create_with_type(&record(), "bad type"),
+        Err(TransportError::InvalidRequest(
+            "object type key is invalid".into()
+        ))
+    );
 }
 
 #[test]
