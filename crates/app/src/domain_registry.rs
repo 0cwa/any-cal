@@ -98,9 +98,41 @@ impl<T: AnytypeTransport> AnytypeTransport for SharedAnytypeTransport<T> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UpstreamCapability {
+    Unknown,
+    Allowed,
+    Denied,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BindingSuspension {
+    Active,
+    Auth,
+    Forbidden,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DomainUpstreamState {
+    pub(crate) read: UpstreamCapability,
+    pub(crate) write: UpstreamCapability,
+    pub(crate) suspension: BindingSuspension,
+}
+
+impl Default for DomainUpstreamState {
+    fn default() -> Self {
+        Self {
+            read: UpstreamCapability::Unknown,
+            write: UpstreamCapability::Unknown,
+            suspension: BindingSuspension::Active,
+        }
+    }
+}
+
 pub(crate) struct DomainContext<T: AnytypeTransport> {
     pub(crate) binding: DomainBinding,
     pub(crate) server: DavServer<AnytypeRepository<SharedAnytypeTransport<T>>>,
+    pub(crate) upstream: DomainUpstreamState,
 }
 
 pub(crate) struct DomainRepositoryRegistry<T: AnytypeTransport> {
@@ -140,6 +172,7 @@ impl<T: AnytypeTransport> DomainRepositoryRegistry<T> {
                         contacts,
                         tasks,
                     },
+                    upstream: DomainUpstreamState::default(),
                 },
             );
         }
@@ -191,6 +224,100 @@ impl<T: AnytypeTransport> DomainRepositoryRegistry<T> {
 
     pub(crate) fn context_mut(&mut self, domain_id: &str) -> Option<&mut DomainContext<T>> {
         self.contexts.get_mut(domain_id)
+    }
+
+    pub(crate) fn upstream_preflight(&self, domain_id: &str, write: bool) -> Option<u16> {
+        let context = self.contexts.get(domain_id)?;
+        match context.upstream.suspension {
+            BindingSuspension::Auth => return Some(401),
+            BindingSuspension::Forbidden => return Some(403),
+            BindingSuspension::Active => {}
+        }
+        let capability = if write {
+            context.upstream.write
+        } else {
+            context.upstream.read
+        };
+        (capability == UpstreamCapability::Denied).then_some(403)
+    }
+
+    pub(crate) fn observe_upstream_response(&mut self, domain_id: &str, write: bool, status: u16) {
+        let Some(context) = self.contexts.get_mut(domain_id) else {
+            return;
+        };
+        match status {
+            401 => context.upstream.suspension = BindingSuspension::Auth,
+            403 => context.upstream.suspension = BindingSuspension::Forbidden,
+            200..=299 => {
+                let capability = if write {
+                    &mut context.upstream.write
+                } else {
+                    &mut context.upstream.read
+                };
+                if *capability == UpstreamCapability::Unknown {
+                    *capability = UpstreamCapability::Allowed;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn configure_upstream_capabilities(
+        &mut self,
+        domain_id: &str,
+        binding_fingerprint: &str,
+        read: bool,
+        write: bool,
+    ) -> bool {
+        let Some(context) = self.contexts.get_mut(domain_id) else {
+            return false;
+        };
+        if context.server.repository.binding.binding_fingerprint != binding_fingerprint {
+            return false;
+        }
+        context.upstream.read = if read {
+            UpstreamCapability::Allowed
+        } else {
+            UpstreamCapability::Denied
+        };
+        context.upstream.write = if write {
+            UpstreamCapability::Allowed
+        } else {
+            UpstreamCapability::Denied
+        };
+        true
+    }
+
+    pub(crate) fn binding_identity(&self, domain_id: &str) -> Option<(&str, &str, &str)> {
+        let binding = &self.contexts.get(domain_id)?.server.repository.binding;
+        Some((
+            binding.binding_fingerprint.as_str(),
+            binding.upstream_account_fingerprint.as_str(),
+            binding.space_id.as_str(),
+        ))
+    }
+
+    pub(crate) fn reauthorize(
+        &mut self,
+        domain_id: &str,
+        upstream_account_fingerprint: &str,
+        space_id: &str,
+    ) -> bool {
+        let Some(context) = self.contexts.get_mut(domain_id) else {
+            return false;
+        };
+        let binding = &context.server.repository.binding;
+        if binding.upstream_account_fingerprint != upstream_account_fingerprint
+            || binding.space_id != space_id
+        {
+            return false;
+        }
+        context.upstream = DomainUpstreamState::default();
+        true
+    }
+
+    pub(crate) fn upstream_state(&self, domain_id: &str) -> Option<DomainUpstreamState> {
+        self.contexts.get(domain_id).map(|context| context.upstream)
     }
 
     pub(crate) fn primary_domain_id(&self) -> &str {
