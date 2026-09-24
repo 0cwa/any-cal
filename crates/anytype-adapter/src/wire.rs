@@ -5,6 +5,7 @@
 //! fields that the internal DAV cache does not need to expose.
 use crate::{ObjectRecord, TransportError};
 use any_cal_core::ResourceEnvelope;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -145,6 +146,44 @@ pub struct WirePagination {
     pub limit: u64,
     #[serde(default)]
     pub total: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
+struct WireDiscoveryList<T> {
+    #[serde(default)]
+    data: Vec<T>,
+    #[serde(default, alias = "next_cursor")]
+    next_offset: Option<Value>,
+    #[serde(default)]
+    pagination: Option<WirePagination>,
+}
+
+impl<T> WireDiscoveryList<T> {
+    fn next_offset_string(&self) -> Option<String> {
+        self.next_offset
+            .as_ref()
+            .and_then(value_to_string)
+            .or_else(|| {
+                self.pagination.as_ref().and_then(|pagination| {
+                    pagination.has_more.then(|| {
+                        pagination
+                            .offset
+                            .saturating_add(self.data.len() as u64)
+                            .to_string()
+                    })
+                })
+            })
+    }
+}
+
+pub fn decode_discovery_list<T: DeserializeOwned>(
+    text: &str,
+) -> Result<(Vec<T>, Option<String>), TransportError> {
+    let page: WireDiscoveryList<T> =
+        serde_json::from_str(text).map_err(|_| TransportError::Malformed)?;
+    let next = page.next_offset_string();
+    Ok((page.data, next))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

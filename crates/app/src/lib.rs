@@ -10,7 +10,7 @@ use any_cal_observability::{
     ReconciliationReport,
 };
 use any_cal_sync::{CommitFault, ObservedResource, SyncState, SyncStore};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
@@ -20,6 +20,7 @@ use serde::Serialize;
 
 mod admin;
 mod config;
+pub mod discovery;
 mod domain_registry;
 mod http;
 pub mod identity;
@@ -216,6 +217,8 @@ pub struct AppGeneric<T: AnytypeTransport> {
     rate_count: u32,
     identity: Option<IdentityStore>,
     identity_now: i64,
+    discovery_snapshots:
+        BTreeMap<crate::discovery::DiscoverySnapshotKey, crate::discovery::SpaceDiscoverySnapshot>,
 }
 impl<T: AnytypeTransport> AppGeneric<T> {
     /// Dispatch directly to the configured primary DAV context. This is a
@@ -507,10 +510,11 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                 ""
             };
             let upstream_json = self.upstream_json();
+            let schema_json = self.schema_health_json();
             let space_configured = !self.registry.is_empty();
             let contacts_configured = self.has_collection_route(DomainCollection::Contacts);
             let tasks_configured = self.has_collection_route(DomainCollection::Tasks);
-            let body = format!("{{\"status\":\"{service_state}\",\"ready\":{service_ready},\"space_configured\":{},\"contacts_collection_configured\":{},\"tasks_collection_configured\":{},\"transport\":\"{}\",\"upstream\":{},\"cache\":\"rebuildable\",\"events\":{},\"failures\":{},\"last_error\":{},\"recovery\":\"sync-checkpoint\"{}{}{} }}", space_configured, contacts_configured, tasks_configured, self.transport_mode, upstream_json, self.health.counters.events, self.health.counters.failures, last_error, sync_export_json, separator, audit_json);
+            let body = format!("{{\"status\":\"{service_state}\",\"ready\":{service_ready},\"space_configured\":{},\"contacts_collection_configured\":{},\"tasks_collection_configured\":{},\"transport\":\"{}\",\"upstream\":{},\"schema\":{},\"cache\":\"rebuildable\",\"events\":{},\"failures\":{},\"last_error\":{},\"recovery\":\"sync-checkpoint\"{}{}{} }}", space_configured, contacts_configured, tasks_configured, self.transport_mode, upstream_json, schema_json, self.health.counters.events, self.health.counters.failures, last_error, sync_export_json, separator, audit_json);
             self.health.record(true, 0, None);
             self.events
                 .push(correlation.event("health", None, "health check"));
@@ -1060,6 +1064,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
             rate_count: 0,
             identity: None,
             identity_now: 0,
+            discovery_snapshots: BTreeMap::new(),
         })
     }
     fn authorization_status(&mut self, request: &any_cal_dav_server::Request) -> Option<u16> {
