@@ -508,18 +508,6 @@ impl AnytypeTransport for FakeAnytypeTransport {
     }
 }
 
-impl AnytypeTypedCreateTransport for FakeAnytypeTransport {
-    fn create_object_with_type(
-        &mut self,
-        object: ObjectRecord,
-        type_key: &str,
-    ) -> Result<ObjectRecord, TransportError> {
-        validate_object_type_key(type_key)?;
-        self.create_object(object)
-    }
-}
-
-
 pub trait AnytypeTransport {
     fn list_objects(
         &mut self,
@@ -544,15 +532,6 @@ pub trait AnytypeTransport {
         object_id: &str,
     ) -> Result<ObjectRecord, TransportError>;
 }
-
-pub trait AnytypeTypedCreateTransport: AnytypeTransport {
-    fn create_object_with_type(
-        &mut self,
-        object: ObjectRecord,
-        type_key: &str,
-    ) -> Result<ObjectRecord, TransportError>;
-}
-
 pub trait AnytypeTypedTransport: AnytypeTransport {
     fn create_object_with_type(
         &mut self,
@@ -630,20 +609,6 @@ pub trait HttpExchange: Send {
 struct HttpResponse {
     status: u16,
     body: String,
-}
-
-fn validate_object_type_key(type_key: &str) -> Result<(), TransportError> {
-    if type_key.is_empty()
-        || type_key.len() > 128
-        || type_key
-            .bytes()
-            .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')))
-    {
-        return Err(TransportError::InvalidRequest(
-            "object type key is invalid".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn endpoint_parts(endpoint: &str) -> Result<(bool, String, String, u16), TransportError> {
@@ -1275,26 +1240,6 @@ impl AnytypeTypedTransport for HttpAnytypeTransport {
         object: ObjectRecord,
         type_key: &str,
     ) -> Result<ObjectRecord, TransportError> {
-        let body = wire::encode_create_with_type(&object, type_key)?;
-        let response = self.request(
-            "POST",
-            &format!(
-                "/v1/spaces/{}/objects",
-                encode_path_segment(&object.space_id)
-            ),
-            Some(&body),
-        )?;
-        wire::decode_object(&response.body, Some(&object.space_id))
-    }
-}
-
-impl AnytypeTypedCreateTransport for HttpAnytypeTransport {
-    fn create_object_with_type(
-        &mut self,
-        object: ObjectRecord,
-        type_key: &str,
-    ) -> Result<ObjectRecord, TransportError> {
-        validate_object_type_key(type_key)?;
         let body = wire::encode_create_with_type(&object, type_key)?;
         let response = self.request(
             "POST",
