@@ -276,7 +276,7 @@ fn capability_discovery_is_binding_scoped_read_only_and_non_authoritative() {
         snapshot
             .diagnostics
             .iter()
-            .find(|item| item.key == "event_reference")
+            .find(|item| item.key == any_cal_anytype_adapter::ANYCAL_EVENT_REFERENCE_TYPE_KEY)
             .unwrap()
             .state,
         RequirementState::Missing
