@@ -8,6 +8,7 @@ pub mod freebusy;
 pub mod ical;
 pub mod memory_repository;
 pub mod model;
+pub mod person_context;
 pub mod repository;
 pub mod vcard;
 pub mod vfreebusy;
@@ -34,6 +35,12 @@ pub use memory_repository::MemoryRepository;
 pub use model::{
     AnytypeObjectId, Collection, CollectionId, DavKind, DavUid, Occurrence, Resource, ResourceId,
     StructuredDocument,
+};
+pub use person_context::{
+    effective_person_context_title, person_context_source_snapshot, project_person_context_source,
+    PersonContextProjectionError, PERSON_CONTEXT_DAV_UID, PERSON_CONTEXT_DISPLAY_NAME,
+    PERSON_CONTEXT_EMAILS, PERSON_CONTEXT_ORGANIZATIONS, PERSON_CONTEXT_PHONES,
+    PERSON_CONTEXT_TITLE_OVERRIDE,
 };
 pub use repository::{
     FailureMode, ModifiedAt, Repository, RepositoryError, StoredResource, WriteCondition,
