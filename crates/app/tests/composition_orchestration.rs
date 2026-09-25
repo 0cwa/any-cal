@@ -308,7 +308,6 @@ fn ambiguous_create_is_reconciled_without_duplicate_materialization() {
     );
 }
 
-
 #[test]
 fn typed_materialization_uses_explicit_type_key_while_default_stays_page() {
     let mut typed = seed();
