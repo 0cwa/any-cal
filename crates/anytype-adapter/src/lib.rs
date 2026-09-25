@@ -15,6 +15,8 @@ pub mod wire;
 
 pub const API_VERSION: &str = "2025-11-08";
 pub const DEFAULT_OBJECT_TYPE_KEY: &str = "page";
+pub const ANYCAL_PERSON_CONTEXT_TYPE_KEY: &str = "anycal_person_context";
+pub const ANYCAL_EVENT_REFERENCE_TYPE_KEY: &str = "anycal_event_reference";
 /// Anytype currently accepts unconditional writes and does not expose a
 /// usable revision/ETag precondition.  Keep this policy explicit so callers
 /// do not accidentally imply optimistic-concurrency guarantees.
