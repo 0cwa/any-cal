@@ -2,7 +2,12 @@ use crate::composition::{CompositionAuthorizationError, CompositionSourceScope};
 use crate::identity::CollectionKind;
 use crate::AppGeneric;
 use any_cal_anytype_adapter::{
-    AnytypeTransport, AnytypeTypedTransport, ObjectRecord, TransportError, DEFAULT_OBJECT_TYPE_KEY,
+    AnytypeTransport, AnytypeTypedTransport, ObjectRecord, TransportError,
+    ANYCAL_FOREIGN_IDENTITY_PROPERTY_KEY, ANYCAL_PROFILE_FINGERPRINT_PROPERTY_KEY,
+    ANYCAL_SOURCE_ACCOUNT_FINGERPRINT_PROPERTY_KEY, ANYCAL_SOURCE_DAV_UID_PROPERTY_KEY,
+    ANYCAL_SOURCE_KIND_PROPERTY_KEY, ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY,
+    ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY, ANYCAL_SOURCE_STATUS_PROPERTY_KEY,
+    DEFAULT_OBJECT_TYPE_KEY,
 };
 use any_cal_core::{
     reconcile_source_snapshot, CompositionError, CompositionProfile, ForeignObjectRef,
@@ -341,6 +346,7 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                     let mut object = existing[index].object.clone();
                     object.body = body;
                     object.archived = false;
+                    apply_managed_reference_properties(&mut object, &persisted)?;
                     let result = self.write_destination_object(
                         &destination_domain_id,
                         object,
@@ -367,7 +373,7 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                         .binding
                         .space_id
                         .clone();
-                    let object = ObjectRecord {
+                    let mut object = ObjectRecord {
                         id: placeholder_id,
                         space_id: destination_space,
                         properties: Vec::new(),
@@ -376,6 +382,7 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                         archived: false,
                         revision: 0,
                     };
+                    apply_managed_reference_properties(&mut object, &persisted)?;
                     let result = self.write_destination_object(
                         &destination_domain_id,
                         object,
@@ -612,6 +619,75 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
         }
         Ok(first.object)
     }
+}
+
+fn apply_managed_reference_properties(
+    object: &mut ObjectRecord,
+    record: &MaterializedReferenceRecord,
+) -> Result<(), CompositionOrchestrationError> {
+    let foreign_identity = record
+        .reference
+        .foreign
+        .identity_fingerprint()
+        .map_err(CompositionOrchestrationError::Composition)?;
+    let source_status = match record.reference.source_availability {
+        SourceAvailability::Available => "available",
+        SourceAvailability::Archived => "archived",
+        SourceAvailability::Deleted => "deleted",
+        SourceAvailability::Unavailable => "unavailable",
+    };
+    let source_kind = match record.reference.foreign.kind {
+        any_cal_core::DavKind::Contact => "contact",
+        any_cal_core::DavKind::ContactGroup => "contact_group",
+        any_cal_core::DavKind::Task => "task",
+        any_cal_core::DavKind::Event => "event",
+    };
+
+    let mut managed = vec![
+        (
+            ANYCAL_PROFILE_FINGERPRINT_PROPERTY_KEY,
+            record.profile_fingerprint.clone(),
+        ),
+        (ANYCAL_FOREIGN_IDENTITY_PROPERTY_KEY, foreign_identity),
+        (
+            ANYCAL_SOURCE_ACCOUNT_FINGERPRINT_PROPERTY_KEY,
+            record
+                .reference
+                .foreign
+                .upstream_account_fingerprint
+                .clone(),
+        ),
+        (
+            ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY,
+            record.reference.foreign.source_space_id.clone(),
+        ),
+        (
+            ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY,
+            record.reference.foreign.source_object_id.clone(),
+        ),
+        (ANYCAL_SOURCE_KIND_PROPERTY_KEY, source_kind.into()),
+        (ANYCAL_SOURCE_STATUS_PROPERTY_KEY, source_status.into()),
+    ];
+    if let Some(dav_uid) = record.reference.foreign.dav_uid.clone() {
+        managed.push((ANYCAL_SOURCE_DAV_UID_PROPERTY_KEY, dav_uid));
+    }
+
+    let managed_keys = managed
+        .iter()
+        .map(|(key, _)| *key)
+        .collect::<BTreeSet<_>>();
+    object
+        .properties
+        .retain(|(key, _)| !managed_keys.contains(key.as_str()));
+    object
+        .property_formats
+        .retain(|key, _| !managed_keys.contains(key.as_str()));
+    for (key, value) in managed {
+        object.properties.push((key.into(), value));
+        object.property_formats.insert(key.into(), "text".into());
+    }
+    object.properties.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(())
 }
 
 fn unavailable_snapshot(

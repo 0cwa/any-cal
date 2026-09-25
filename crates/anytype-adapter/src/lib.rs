@@ -17,6 +17,16 @@ pub const API_VERSION: &str = "2025-11-08";
 pub const DEFAULT_OBJECT_TYPE_KEY: &str = "page";
 pub const ANYCAL_PERSON_CONTEXT_TYPE_KEY: &str = "anycal_person_context";
 pub const ANYCAL_EVENT_REFERENCE_TYPE_KEY: &str = "anycal_event_reference";
+pub const ANYCAL_PROFILE_FINGERPRINT_PROPERTY_KEY: &str = "anycal_profile_fingerprint";
+pub const ANYCAL_FOREIGN_IDENTITY_PROPERTY_KEY: &str = "anycal_foreign_identity";
+pub const ANYCAL_SOURCE_ACCOUNT_FINGERPRINT_PROPERTY_KEY: &str =
+    "anycal_source_account_fingerprint";
+pub const ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY: &str = "anycal_source_space_id";
+pub const ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY: &str = "anycal_source_object_id";
+pub const ANYCAL_SOURCE_KIND_PROPERTY_KEY: &str = "anycal_source_kind";
+pub const ANYCAL_SOURCE_DAV_UID_PROPERTY_KEY: &str = "anycal_source_dav_uid";
+pub const ANYCAL_SOURCE_STATUS_PROPERTY_KEY: &str = "anycal_source_status";
+pub const ANYCAL_PRIVATE_RELATIONS_PROPERTY_KEY: &str = "anycal_private_relations";
 /// Anytype currently accepts unconditional writes and does not expose a
 /// usable revision/ETag precondition.  Keep this policy explicit so callers
 /// do not accidentally imply optimistic-concurrency guarantees.
