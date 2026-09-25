@@ -1,5 +1,7 @@
 use crate::{binding_collection_ids, ensure_collection, AppConfig, ConfigError};
-use any_cal_anytype_adapter::{AnytypeRepository, AnytypeTransport, Page, TransportError};
+use any_cal_anytype_adapter::{
+    AnytypeRepository, AnytypeTransport, AnytypeTypedTransport, Page, TransportError,
+};
 use any_cal_core::{DavRoute, DomainBinding, DomainBindings, DomainCollection};
 use any_cal_dav_server::DavServer;
 use std::collections::{BTreeMap, BTreeSet};
@@ -126,6 +128,16 @@ impl Default for DomainUpstreamState {
             write: UpstreamCapability::Unknown,
             suspension: BindingSuspension::Active,
         }
+    }
+}
+
+impl<T: AnytypeTypedTransport> AnytypeTypedTransport for SharedAnytypeTransport<T> {
+    fn create_object_with_type(
+        &mut self,
+        object: any_cal_anytype_adapter::ObjectRecord,
+        type_key: &str,
+    ) -> Result<any_cal_anytype_adapter::ObjectRecord, TransportError> {
+        self.lock()?.create_object_with_type(object, type_key)
     }
 }
 

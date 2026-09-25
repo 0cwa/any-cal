@@ -15,6 +15,8 @@ pub mod wire;
 
 pub const API_VERSION: &str = "2025-11-08";
 pub const DEFAULT_OBJECT_TYPE_KEY: &str = "page";
+pub const ANYCAL_PERSON_CONTEXT_TYPE_KEY: &str = "anycal_person_context";
+pub const ANYCAL_EVENT_REFERENCE_TYPE_KEY: &str = "anycal_event_reference";
 /// Anytype currently accepts unconditional writes and does not expose a
 /// usable revision/ETag precondition.  Keep this policy explicit so callers
 /// do not accidentally imply optimistic-concurrency guarantees.
@@ -349,6 +351,7 @@ pub struct FakeAnytypeTransport {
     pub update_calls: usize,
     pub archive_calls: usize,
     pub delete_calls: usize,
+    pub create_type_keys: Vec<String>,
     pub delay_next_read: bool,
     pub timeout_after: Option<AmbiguousMutation>,
 }
@@ -547,6 +550,7 @@ impl AnytypeTypedTransport for FakeAnytypeTransport {
         type_key: &str,
     ) -> Result<ObjectRecord, TransportError> {
         wire::encode_create_with_type(&object, type_key)?;
+        self.create_type_keys.push(type_key.to_owned());
         self.create_object(object)
     }
 }

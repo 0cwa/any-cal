@@ -1,7 +1,9 @@
 use crate::composition::{CompositionAuthorizationError, CompositionSourceScope};
 use crate::identity::CollectionKind;
 use crate::AppGeneric;
-use any_cal_anytype_adapter::{AnytypeTransport, ObjectRecord, TransportError};
+use any_cal_anytype_adapter::{
+    AnytypeTransport, AnytypeTypedTransport, ObjectRecord, TransportError, DEFAULT_OBJECT_TYPE_KEY,
+};
 use any_cal_core::{
     reconcile_source_snapshot, CompositionError, CompositionProfile, ForeignObjectRef,
     MaterializedReference, RefreshKind, Repository, RepositoryError, ResourceId,
@@ -142,7 +144,7 @@ struct LoadedDestination {
     record: MaterializedReferenceRecord,
 }
 
-impl<T: AnytypeTransport> AppGeneric<T> {
+impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
     /// Read one or more authorized canonical source resources, reconcile them
     /// against private materialized references, and write only the configured
     /// destination domain. The projector is pure and decides which bounded
@@ -152,6 +154,26 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         profile: &CompositionProfile,
         token: &str,
         source_scopes: &[CompositionSourceScope],
+        projector: F,
+    ) -> Result<Vec<MaterializationResult>, CompositionOrchestrationError>
+    where
+        F: Fn(&StoredResource) -> BTreeMap<String, Value>,
+    {
+        self.materialize_references_with_type(
+            profile,
+            token,
+            source_scopes,
+            DEFAULT_OBJECT_TYPE_KEY,
+            projector,
+        )
+    }
+
+    pub fn materialize_references_with_type<F>(
+        &mut self,
+        profile: &CompositionProfile,
+        token: &str,
+        source_scopes: &[CompositionSourceScope],
+        destination_type_key: &str,
         projector: F,
     ) -> Result<Vec<MaterializationResult>, CompositionOrchestrationError>
     where
@@ -323,6 +345,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                         &destination_domain_id,
                         object,
                         false,
+                        destination_type_key,
                         &persisted,
                     )?;
                     existing[index] = LoadedDestination {
@@ -357,6 +380,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                         &destination_domain_id,
                         object,
                         true,
+                        destination_type_key,
                         &persisted,
                     )?;
                     let index = existing.len();
@@ -467,6 +491,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
         domain_id: &str,
         object: ObjectRecord,
         create: bool,
+        destination_type_key: &str,
         expected_record: &MaterializedReferenceRecord,
     ) -> Result<ObjectRecord, CompositionOrchestrationError> {
         let space_id = self
@@ -490,7 +515,7 @@ impl<T: AnytypeTransport> AppGeneric<T> {
                     .server
                     .repository
                     .transport
-                    .create_object(object.clone())
+                    .create_object_with_type(object.clone(), destination_type_key)
             } else {
                 context
                     .server

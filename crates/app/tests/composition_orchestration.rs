@@ -307,3 +307,43 @@ fn ambiguous_create_is_reconciled_without_duplicate_materialization() {
         1
     );
 }
+
+#[test]
+fn typed_materialization_uses_explicit_type_key_while_default_stays_page() {
+    let mut typed = seed();
+    typed
+        .materialize_references_with_type(
+            &profile(),
+            "alice-token",
+            &[CompositionSourceScope::resource(
+                "shared",
+                CollectionKind::Contacts,
+                "carol",
+            )],
+            any_cal_anytype_adapter::ANYCAL_PERSON_CONTEXT_TYPE_KEY,
+            projector,
+        )
+        .unwrap();
+    assert_eq!(
+        typed.transport_snapshot().create_type_keys,
+        vec![any_cal_anytype_adapter::ANYCAL_PERSON_CONTEXT_TYPE_KEY.to_owned()]
+    );
+
+    let mut default = seed();
+    default
+        .materialize_references(
+            &profile(),
+            "alice-token",
+            &[CompositionSourceScope::resource(
+                "shared",
+                CollectionKind::Contacts,
+                "carol",
+            )],
+            projector,
+        )
+        .unwrap();
+    assert_eq!(
+        default.transport_snapshot().create_type_keys,
+        vec![any_cal_anytype_adapter::DEFAULT_OBJECT_TYPE_KEY.to_owned()]
+    );
+}

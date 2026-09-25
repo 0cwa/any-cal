@@ -2,6 +2,7 @@ use crate::AppGeneric;
 use any_cal_anytype_adapter::{
     AnytypeDiscoveryTransport, AnytypeTransport, DiscoveredMember, DiscoveredProperty,
     DiscoveredSpace, DiscoveredTag, DiscoveredType, DiscoveredView, Page, TransportError,
+    ANYCAL_EVENT_REFERENCE_TYPE_KEY, ANYCAL_PERSON_CONTEXT_TYPE_KEY,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -293,8 +294,8 @@ fn default_schema_diagnostics(
         ("Task", "task"),
         ("Person", "person"),
         ("Event", "event"),
-        ("Person Context", "person_context"),
-        ("Event Reference", "event_reference"),
+        ("Person Context", ANYCAL_PERSON_CONTEXT_TYPE_KEY),
+        ("Event Reference", ANYCAL_EVENT_REFERENCE_TYPE_KEY),
     ]
     .into_iter()
     .map(|(workflow, key)| {
