@@ -37,6 +37,9 @@ resources. Calendar events are reserved for a later `VEVENT` profile.
   data, not a lossy replacement for it.
 - The server advertises only capabilities it implements and tests against
   real clients.
+- Canonical DAV ownership and personal cross-Space composition are separate layers:
+  composition reads explicitly authorized domain contexts and writes exactly one
+  configured private/home context without changing canonical ownership.
 
 ## Target architecture
 
@@ -56,7 +59,10 @@ Slint UI (current thin client): setup, server status, and local health
 diagnostics
 ```
 
-See [schemas.md](schemas.md) for the object models,
+See [domain-bindings.md](domain-bindings.md) for canonical routing,
+[cross-space-composition.md](cross-space-composition.md) for private facets and
+cross-Space personal views,
+[schemas.md](schemas.md) for the object models,
 [development-efficiency.md](development-efficiency.md) for thin-slice sequencing,
 agent ownership, and automation,
 [research.md](research.md) for data/protocol decisions,
