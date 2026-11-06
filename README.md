@@ -22,9 +22,10 @@ DAV clients and does not maintain a second persistent sync database.
 - Calendar `VEVENT`, recurrence, incremental sync, and broad client
   compatibility remain extension work.
 
-Contacts and tasks are mapped to typed Anytype properties while preserving
-opaque/unknown DAV data in the adapter representation. Tasks can carry links
-to Anytype project objects without changing the DAV client model.
+Contacts and tasks preserve canonical DAV data, including fields that cannot
+be represented losslessly as Anytype properties. Optional property projection
+requires a matching destination schema; native typed mappings and relations
+remain tracked in [issue #6](https://github.com/0cwa/any-cal/issues/6).
 
 Cross-Space composition has library primitives and deterministic fixture
 coverage. A complete operator workflow and native Anytype editing validation
