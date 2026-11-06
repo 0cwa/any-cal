@@ -2,7 +2,7 @@ use any_cal_anytype_adapter::{
     AnytypeTransport, AnytypeTypedTransport, FakeAnytypeTransport, ObjectRecord, Page,
     TransportError,
 };
-use any_cal_app::composition::CompositionSourceScope;
+use any_cal_app::composition::{CompositionAuthorizationError, CompositionSourceScope};
 use any_cal_app::composition_orchestration::MaterializedReferenceRecord;
 use any_cal_app::identity::{
     AccessPolicy, CollectionKind, CredentialSpec, IdentityStore, Operation, PrincipalId,
@@ -368,7 +368,8 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
 
 #[test]
 fn person_context_materialization_is_idempotent_after_reopen() {
-    let mut app = App::fake(config()).unwrap();
+    // Keep the same account-context seam on both sides of the restart.
+    let mut app = App::with_transport(config(), FakeAnytypeTransport::new(100)).unwrap();
     assert_eq!(
         app.handle(request(
             "PUT",
@@ -386,11 +387,13 @@ fn person_context_materialization_is_idempotent_after_reopen() {
     assert_eq!(first.len(), 1);
     assert!(first[0].created);
     let object_id = first[0].destination_object_id.clone();
+    let source_binding = app.upstream_binding_identity("shared");
 
     let remote = app.transport_snapshot();
     let mut reopened = App::with_transport(config(), remote)
         .unwrap()
         .with_identity(identity(), 150);
+    assert_eq!(reopened.upstream_binding_identity("shared"), source_binding);
     let second = reopened
         .materialize_person_contexts(&profile("alice", "alice-home"), "alice-token", &scope())
         .unwrap();
@@ -466,13 +469,25 @@ fn source_auth_loss_marks_person_context_unavailable_and_exact_reauth_reconnects
     );
     assert_eq!(
         app.upstream_binding_status("shared"),
-        Some(("unknown", "unknown", "auth"))
+        Some(("allowed", "allowed", "auth"))
     );
 
+    // Transport recovery alone must not clear the authorization suspension.
+    app.with_transport_mut(|transport| transport.fail_shared_auth = false);
     assert!(!app.reauthorize_upstream_domain("shared", "wrong-account", &source_space));
     assert!(!app.reauthorize_upstream_domain("shared", &account_fingerprint, "wrong-space"));
+    assert_eq!(
+        app.authorize_composition(&profile("alice", "alice-home"), "alice-token", &scope()),
+        Err(CompositionAuthorizationError::SourceUpstreamDenied {
+            domain_id: "shared".into(),
+            status: 401,
+        })
+    );
     assert!(app.reauthorize_upstream_domain("shared", &account_fingerprint, &source_space));
-    app.with_transport_mut(|transport| transport.fail_shared_auth = false);
+    assert_eq!(
+        app.upstream_binding_status("shared"),
+        Some(("unknown", "unknown", "active"))
+    );
 
     let restored = app
         .materialize_person_contexts(&profile("alice", "alice-home"), "alice-token", &scope())
