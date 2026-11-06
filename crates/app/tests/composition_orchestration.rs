@@ -1,4 +1,8 @@
-use any_cal_anytype_adapter::AmbiguousMutation;
+use any_cal_anytype_adapter::{
+    AmbiguousMutation, ObjectRecord, ANYCAL_FOREIGN_IDENTITY_PROPERTY_KEY,
+    ANYCAL_PRIVATE_RELATIONS_PROPERTY_KEY, ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY,
+    ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY, ANYCAL_SOURCE_STATUS_PROPERTY_KEY,
+};
 use any_cal_app::composition::CompositionSourceScope;
 use any_cal_app::composition_orchestration::{
     MaterializedReferenceRecord, MATERIALIZED_RECORD_TYPE,
@@ -345,5 +349,110 @@ fn typed_materialization_uses_explicit_type_key_while_default_stays_page() {
     assert_eq!(
         default.transport_snapshot().create_type_keys,
         vec![any_cal_anytype_adapter::DEFAULT_OBJECT_TYPE_KEY.to_owned()]
+    );
+}
+
+
+#[test]
+fn managed_source_metadata_refreshes_while_private_same_space_relation_survives_reopen() {
+    let mut app = seed();
+    let result = app
+        .materialize_references(
+            &profile(),
+            "alice-token",
+            &[CompositionSourceScope::resource(
+                "shared",
+                CollectionKind::Contacts,
+                "carol",
+            )],
+            projector,
+        )
+        .unwrap();
+    let context_id = result[0].destination_object_id.clone();
+    let source_id = result[0].reference.foreign.source_object_id.clone();
+    let foreign_identity = result[0].reference.foreign.identity_fingerprint().unwrap();
+
+    app.with_transport_mut(|transport| {
+        transport.objects.insert_object(ObjectRecord {
+            id: "local-project".into(),
+            space_id: "space-home".into(),
+            properties: Vec::new(),
+            property_formats: BTreeMap::new(),
+            body: "ordinary local object".into(),
+            archived: false,
+            revision: 0,
+        });
+
+        let context = transport
+            .objects
+            .get_mut_in_space("space-home", &context_id)
+            .unwrap();
+        context.properties.push((
+            ANYCAL_PRIVATE_RELATIONS_PROPERTY_KEY.into(),
+            serde_json::json!(["local-project"]).to_string(),
+        ));
+        context.property_formats.insert(
+            ANYCAL_PRIVATE_RELATIONS_PROPERTY_KEY.into(),
+            "objects".into(),
+        );
+
+        let source = transport
+            .objects
+            .get_mut_in_space("space-shared", &source_id)
+            .unwrap();
+        let mut envelope = ResourceEnvelope::from_json(&source.body).unwrap();
+        envelope.document.content.fields.get_mut("FN").unwrap()[0].value =
+            "Carol Relation Refresh".into();
+        source.body = envelope.canonical_json().unwrap();
+    });
+
+    let remote = app.transport_snapshot();
+    let mut reopened = App::with_transport(config(), remote)
+        .unwrap()
+        .with_identity(identity(), 150);
+    reopened
+        .materialize_references(
+            &profile(),
+            "alice-token",
+            &[CompositionSourceScope::resource(
+                "shared",
+                CollectionKind::Contacts,
+                "carol",
+            )],
+            projector,
+        )
+        .unwrap();
+
+    let remote = reopened.transport_snapshot();
+    let context = remote
+        .objects
+        .get_in_space("space-home", &context_id)
+        .unwrap();
+    let properties = context
+        .properties
+        .iter()
+        .cloned()
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(
+        properties[ANYCAL_PRIVATE_RELATIONS_PROPERTY_KEY],
+        serde_json::json!(["local-project"]).to_string()
+    );
+    assert_eq!(
+        context.property_formats[ANYCAL_PRIVATE_RELATIONS_PROPERTY_KEY],
+        "objects"
+    );
+    assert_eq!(properties[ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY], "space-shared");
+    assert_eq!(properties[ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY], source_id);
+    assert_eq!(properties[ANYCAL_SOURCE_STATUS_PROPERTY_KEY], "available");
+    assert_eq!(
+        properties[ANYCAL_FOREIGN_IDENTITY_PROPERTY_KEY],
+        foreign_identity
+    );
+
+    let record = MaterializedReferenceRecord::from_json(&context.body).unwrap();
+    assert_eq!(
+        record.reference.source_fields["title"],
+        "Carol Relation Refresh"
     );
 }
