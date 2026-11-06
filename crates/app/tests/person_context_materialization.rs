@@ -1,13 +1,13 @@
+use any_cal_anytype_adapter::{
+    AnytypeTransport, AnytypeTypedTransport, FakeAnytypeTransport, ObjectRecord, Page,
+    TransportError,
+};
 use any_cal_app::composition::CompositionSourceScope;
 use any_cal_app::composition_orchestration::MaterializedReferenceRecord;
 use any_cal_app::identity::{
     AccessPolicy, CollectionKind, CredentialSpec, IdentityStore, Operation, PrincipalId,
 };
 use any_cal_app::person_context::private_person_context_fields;
-use any_cal_anytype_adapter::{
-    AnytypeTransport, AnytypeTypedTransport, FakeAnytypeTransport, ObjectRecord, Page,
-    TransportError,
-};
 use any_cal_app::{App, AppConfig, AppWithTransport};
 use any_cal_core::{
     CompositionProfile, ProjectionPolicy, RefreshKind, ResourceEnvelope, SourceAvailability,
@@ -417,11 +417,9 @@ fn person_context_materialization_is_idempotent_after_reopen() {
     );
 }
 
-
 #[test]
 fn source_auth_loss_marks_person_context_unavailable_and_exact_reauth_reconnects_it() {
-    let mut app =
-        AppWithTransport::with_transport(config(), SpaceFaultTransport::new()).unwrap();
+    let mut app = AppWithTransport::with_transport(config(), SpaceFaultTransport::new()).unwrap();
     assert_eq!(
         app.handle(request(
             "PUT",
@@ -472,16 +470,8 @@ fn source_auth_loss_marks_person_context_unavailable_and_exact_reauth_reconnects
     );
 
     assert!(!app.reauthorize_upstream_domain("shared", "wrong-account", &source_space));
-    assert!(!app.reauthorize_upstream_domain(
-        "shared",
-        &account_fingerprint,
-        "wrong-space"
-    ));
-    assert!(app.reauthorize_upstream_domain(
-        "shared",
-        &account_fingerprint,
-        &source_space
-    ));
+    assert!(!app.reauthorize_upstream_domain("shared", &account_fingerprint, "wrong-space"));
+    assert!(app.reauthorize_upstream_domain("shared", &account_fingerprint, &source_space));
     app.with_transport_mut(|transport| transport.fail_shared_auth = false);
 
     let restored = app
