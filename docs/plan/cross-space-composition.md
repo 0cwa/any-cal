@@ -128,6 +128,12 @@ A useful title rule is:
 Schema/property mismatch must never cause Any-Cal to coerce a destination-user-owned
 field into a source-owned field.
 
+Composition refreshes use the shared HTTP update encoder's write-safe property policy.
+Known read-only Anytype system properties are omitted from PATCH requests; writable
+private properties, including tags and same-Space object relations, retain their values
+and native formats. Read decoding still retains system metadata. This boundary also
+applies to body-only references and does not require custom metadata schema.
+
 ## Privacy and disclosure policy
 
 Materialization copies information between permission domains. Treat it as an explicit
