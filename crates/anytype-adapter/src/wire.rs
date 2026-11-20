@@ -300,6 +300,12 @@ fn object_to_wire(
             object
                 .properties
                 .iter()
+                // Direct updates (including composition refreshes) can carry a
+                // decoded response. Apply the same write policy as DAV updates
+                // before attempting to encode any read-only system values.
+                .filter(|(name, _)| {
+                    operation != Operation::Update || !crate::is_reserved_system_property(name)
+                })
                 .map(|(name, property)| {
                     let mut item = Map::new();
                     item.insert("key".into(), Value::String(name.clone()));
