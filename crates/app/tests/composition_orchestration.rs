@@ -1,4 +1,6 @@
-use any_cal_anytype_adapter::AmbiguousMutation;
+use any_cal_anytype_adapter::{
+    AmbiguousMutation, HttpAnytypeTransport, HttpExchange, TransportError,
+};
 use any_cal_app::composition::CompositionSourceScope;
 use any_cal_app::composition_orchestration::{
     MaterializedReferenceRecord, MATERIALIZED_RECORD_TYPE,
@@ -6,11 +8,47 @@ use any_cal_app::composition_orchestration::{
 use any_cal_app::identity::{
     AccessPolicy, CollectionKind, CredentialSpec, IdentityStore, Operation, PrincipalId,
 };
-use any_cal_app::{App, AppConfig};
+use any_cal_app::{App, AppConfig, AppGeneric};
 use any_cal_core::{CompositionProfile, ProjectionPolicy, RefreshKind, ResourceEnvelope};
 use any_cal_dav_server::Request;
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::{Arc, Mutex};
+
+#[derive(Default)]
+struct HttpScript {
+    steps: VecDeque<(String, serde_json::Value)>,
+    requests: Vec<String>,
+}
+
+struct ScriptedHttp(Arc<Mutex<HttpScript>>);
+
+impl HttpExchange for ScriptedHttp {
+    fn exchange(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        let text = std::str::from_utf8(request).unwrap();
+        let (headers, body) = text.split_once("\r\n\r\n").unwrap();
+        let mut script = self.0.lock().unwrap();
+        let (expected, response) = script.steps.pop_front().expect("unexpected HTTP request");
+        assert_eq!(headers.lines().next().unwrap(), expected);
+        assert!(headers.contains("Anytype-Version: 2025-11-08"));
+        assert!(headers.contains("Authorization: Bearer fixture-upstream-token"));
+        let declared = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length:"))
+            .unwrap()
+            .trim()
+            .parse::<usize>()
+            .unwrap();
+        assert_eq!(declared, body.len());
+        script.requests.push(text.to_owned());
+        let response = response.to_string();
+        Ok(format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{response}",
+            response.len()
+        )
+        .into_bytes())
+    }
+}
 
 fn config() -> AppConfig {
     let mut config = AppConfig::defaults();
@@ -272,6 +310,155 @@ fn read_many_write_one_is_idempotent_private_and_dav_invisible() {
         "Alice only"
     );
     assert_eq!(deleted[0].reference.source_fields["title"], "Carol Updated");
+}
+
+#[test]
+fn http_refresh_filters_system_properties_and_preserves_private_native_fields() {
+    let source_scopes = [CompositionSourceScope::resource(
+        "shared",
+        CollectionKind::Contacts,
+        "carol",
+    )];
+    let mut seeded = seed();
+    let initial = seeded
+        .materialize_references(&profile(), "alice-token", &source_scopes, projector)
+        .unwrap();
+    let destination_id = &initial[0].destination_object_id;
+    let source_id = &initial[0].reference.foreign.source_object_id;
+    let snapshot = seeded.transport_snapshot();
+    let destination = snapshot
+        .objects
+        .get_in_space("space-home", destination_id)
+        .unwrap();
+    let source = snapshot
+        .objects
+        .get_in_space("space-shared", source_id)
+        .unwrap();
+
+    // A fresh HTTP app must recover the reference from Anytype, with no cached
+    // fake-transport state or custom metadata schema to identify the object.
+    let script = Arc::new(Mutex::new(HttpScript::default()));
+    let mut http_config = config();
+    http_config.token = Some("fixture-upstream-token".into());
+    let mut app = AppGeneric::<HttpAnytypeTransport>::http_with_exchange(
+        http_config,
+        Box::new(ScriptedHttp(Arc::clone(&script))),
+    )
+    .unwrap()
+    .with_identity(identity(), 150);
+    let mut record = MaterializedReferenceRecord::from_json(&destination.body).unwrap();
+    record.reference.foreign.upstream_account_fingerprint =
+        app.upstream_binding_identity("shared").unwrap().1;
+    record.reference.user_fields = BTreeMap::from([
+        ("private_notes".into(), json!("Alice only")),
+        ("private_tags".into(), json!(["follow-up"])),
+        ("private_relations".into(), json!(["home-project"])),
+    ]);
+    let mut source_envelope = ResourceEnvelope::from_json(&source.body).unwrap();
+    source_envelope
+        .document
+        .content
+        .fields
+        .get_mut("FN")
+        .unwrap()[0]
+        .value = "Carol Updated".into();
+    let mut refreshed = record.clone();
+    refreshed
+        .reference
+        .source_fields
+        .insert("title".into(), json!("Carol Updated"));
+
+    let properties = json!([
+        {"key":"backlinks","format":"objects","objects":[{"id":"home-note"}]},
+        {"key":"creator","format":"objects","objects":[{"id":"alice"}]},
+        {"key":"created_date","format":"date","date":"2026-09-23T10:00:00Z"},
+        {"key":"last_modified_date","format":"date","date":"2026-09-24T10:00:00Z"},
+        {"key":"last_modified_by","format":"objects","objects":[{"id":"alice"}]},
+        {"key":"links","format":"objects","objects":[{"id":"home-project"}]},
+        {"key":"private_notes","format":"text","text":"Private café note"},
+        {"key":"private_tags","format":"multi_select","multi_select":[
+            {"key":"follow-up","name":"Follow up"},{"key":"friends","name":"Friends"}
+        ]},
+        {"key":"private_relations","format":"objects","objects":[
+            {"id":"home-project","name":"Private project"},{"id":"home-note","name":"Private note"}
+        ]}
+    ]);
+    let destination_response = |record: &MaterializedReferenceRecord| {
+        json!({"object":{
+            "id":destination_id,
+            "type":{"key":"page"},
+            "markdown":format!("```json\n{}\n```", record.canonical_json().unwrap()),
+            "properties":properties
+        }})
+    };
+    script.lock().unwrap().steps = [
+        (
+            "GET /v1/spaces/space-home/objects HTTP/1.1".into(),
+            json!({"data":[{"id":destination_id,"type":{"key":"page"}}]}),
+        ),
+        (
+            format!("GET /v1/spaces/space-home/objects/{destination_id} HTTP/1.1"),
+            destination_response(&record),
+        ),
+        (
+            "GET /v1/spaces/space-shared/objects HTTP/1.1".into(),
+            json!({"data":[{"id":source_id,"type":{"key":"page"}}]}),
+        ),
+        (
+            format!("GET /v1/spaces/space-shared/objects/{source_id} HTTP/1.1"),
+            json!({"object":{
+                "id":source_id,
+                "markdown":format!("```json\n{}\n```", source_envelope.canonical_json().unwrap()),
+                "properties":[]
+            }}),
+        ),
+        (
+            format!("PATCH /v1/spaces/space-home/objects/{destination_id} HTTP/1.1"),
+            destination_response(&refreshed),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let results = app
+        .materialize_references(&profile(), "alice-token", &source_scopes, projector)
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(!results[0].created);
+    assert_eq!(&results[0].destination_object_id, destination_id);
+    assert_eq!(results[0].refresh_kind, RefreshKind::SourceRefreshed);
+    assert_eq!(results[0].reference, refreshed.reference);
+
+    let script = script.lock().unwrap();
+    assert!(script.steps.is_empty());
+    assert_eq!(script.requests.len(), 5);
+    let patch: serde_json::Value =
+        serde_json::from_str(script.requests[4].split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(
+        patch["properties"],
+        json!([
+            {"key":"private_notes","text":"Private café note"},
+            {"key":"private_tags","multi_select":["follow-up","friends"]},
+            {"key":"private_relations","objects":["home-project","home-note"]}
+        ])
+    );
+    assert!(patch.get("type_key").is_none());
+    assert!(patch.get("body").is_none());
+    let persisted = MaterializedReferenceRecord::from_json(
+        patch["markdown"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("```json\n")
+            .unwrap()
+            .strip_suffix("\n```")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(persisted, refreshed);
+    assert_eq!(
+        persisted.reference.user_fields,
+        record.reference.user_fields
+    );
 }
 
 #[test]
