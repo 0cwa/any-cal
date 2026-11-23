@@ -1,5 +1,7 @@
 use crate::composition::{CompositionAuthorizationError, CompositionSourceScope};
 use crate::identity::CollectionKind;
+use crate::materialized_properties::ReferencePropertyPolicy;
+pub use crate::materialized_properties::{CompositionSchemaError, MetadataProjection};
 use crate::AppGeneric;
 use any_cal_anytype_adapter::{
     AnytypeTransport, AnytypeTypedTransport, ObjectRecord, TransportError, DEFAULT_OBJECT_TYPE_KEY,
@@ -102,6 +104,7 @@ pub struct MaterializationResult {
     pub destination_object_id: String,
     pub created: bool,
     pub refresh_kind: RefreshKind,
+    pub metadata_projection: MetadataProjection,
     pub reference: MaterializedReference,
 }
 
@@ -124,6 +127,7 @@ pub enum CompositionOrchestrationError {
         error: RepositoryError,
     },
     SourceKindMismatch(String),
+    DestinationSchema(CompositionSchemaError),
     DestinationTransport(TransportError),
     MalformedDestinationRecord,
     DuplicateDestinationReference,
@@ -183,11 +187,17 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
             .authorize_composition(profile, token, source_scopes)
             .map_err(CompositionOrchestrationError::Authorization)?;
 
+        let property_policy = self
+            .materialized_property_policy(&plan.destination_domain_id, destination_type_key)
+            .map_err(CompositionOrchestrationError::DestinationSchema)?;
         let mut existing = self.scan_destination_materialized(&plan.destination_domain_id)?;
         existing.retain(|loaded| loaded.record.profile_fingerprint == plan.profile_fingerprint);
         let mut by_correlation = BTreeMap::<CorrelationKey, usize>::new();
         let mut by_identity = BTreeMap::<String, usize>::new();
         for (index, loaded) in existing.iter().enumerate() {
+            property_policy
+                .validate_existing(&loaded.object)
+                .map_err(CompositionOrchestrationError::DestinationSchema)?;
             if by_correlation
                 .insert(loaded.record.correlation_key(), index)
                 .is_some()
@@ -341,12 +351,16 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                     let mut object = existing[index].object.clone();
                     object.body = body;
                     object.archived = false;
+                    property_policy
+                        .apply(&mut object, &persisted)
+                        .map_err(CompositionOrchestrationError::Composition)?;
                     let result = self.write_destination_object(
                         &destination_domain_id,
                         object,
                         false,
                         destination_type_key,
                         &persisted,
+                        property_policy,
                     )?;
                     existing[index] = LoadedDestination {
                         object: result.clone(),
@@ -367,7 +381,7 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                         .binding
                         .space_id
                         .clone();
-                    let object = ObjectRecord {
+                    let mut object = ObjectRecord {
                         id: placeholder_id,
                         space_id: destination_space,
                         properties: Vec::new(),
@@ -376,12 +390,16 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                         archived: false,
                         revision: 0,
                     };
+                    property_policy
+                        .apply(&mut object, &persisted)
+                        .map_err(CompositionOrchestrationError::Composition)?;
                     let result = self.write_destination_object(
                         &destination_domain_id,
                         object,
                         true,
                         destination_type_key,
                         &persisted,
+                        property_policy,
                     )?;
                     let index = existing.len();
                     existing.push(LoadedDestination {
@@ -404,6 +422,7 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                 destination_object_id: object.id,
                 created,
                 refresh_kind: merge.kind,
+                metadata_projection: property_policy.projection(),
                 reference: merge.reference,
             });
         }
@@ -493,6 +512,7 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
         create: bool,
         destination_type_key: &str,
         expected_record: &MaterializedReferenceRecord,
+        property_policy: ReferencePropertyPolicy,
     ) -> Result<ObjectRecord, CompositionOrchestrationError> {
         let space_id = self
             .registry
@@ -550,7 +570,12 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
             }
             Err(TransportError::Timeout) => {
                 if create {
-                    self.reconcile_destination_create(domain_id, expected_record)
+                    self.reconcile_destination_create(
+                        domain_id,
+                        expected_record,
+                        &object,
+                        property_policy,
+                    )
                 } else {
                     let actual = {
                         let context = self
@@ -565,7 +590,11 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                     }
                     .map_err(CompositionOrchestrationError::DestinationTransport)?;
                     let observed = MaterializedReferenceRecord::from_json(&actual.body)?;
-                    if observed == *expected_record {
+                    if actual.space_id == object.space_id
+                        && actual.id == object.id
+                        && observed == *expected_record
+                        && property_policy.confirms_write(&object, &actual)
+                    {
                         Ok(actual)
                     } else {
                         Err(CompositionOrchestrationError::DestinationTransport(
@@ -582,6 +611,8 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
         &mut self,
         domain_id: &str,
         expected: &MaterializedReferenceRecord,
+        intended: &ObjectRecord,
+        property_policy: ReferencePropertyPolicy,
     ) -> Result<ObjectRecord, CompositionOrchestrationError> {
         let candidates = self.scan_destination_materialized(domain_id)?;
         let expected_identity = expected
@@ -609,6 +640,11 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
             ))?;
         if matching.next().is_some() {
             return Err(CompositionOrchestrationError::DuplicateDestinationReference);
+        }
+        if !property_policy.confirms_write(intended, &first.object) {
+            return Err(CompositionOrchestrationError::DestinationTransport(
+                TransportError::Timeout,
+            ));
         }
         Ok(first.object)
     }

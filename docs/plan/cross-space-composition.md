@@ -134,6 +134,14 @@ private properties, including tags and same-Space object relations, retain their
 and native formats. Read decoding still retains system metadata. This boundary also
 applies to body-only references and does not require custom metadata schema.
 
+Optional native reference indexes use the fixed metadata group described in
+[schemas.md](schemas.md#native-reference-metadata). They require a current
+binding-qualified discovery snapshot and matching native text formats. Missing optional
+keys retain body-only operation; incompatible schema fails before writes. Explicit
+typed Person Context operations additionally require discovery of their destination
+type. This preserves the distinction between durable foreign identity in the body and
+optional native fields used for local display and filtering.
+
 ## Privacy and disclosure policy
 
 Materialization copies information between permission domains. Treat it as an explicit

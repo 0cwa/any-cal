@@ -1,3 +1,4 @@
+use crate::materialized_properties::MANAGED_REFERENCE_KEYS;
 use crate::AppGeneric;
 use any_cal_anytype_adapter::{
     AnytypeDiscoveryTransport, AnytypeTransport, DiscoveredMember, DiscoveredProperty,
@@ -147,6 +148,9 @@ where
         let diagnostics = default_schema_diagnostics(&types, &properties);
         let schema_ready = diagnostics
             .iter()
+            // Optional reference indexes do not change canonical schema
+            // readiness or the availability of the body-only path.
+            .filter(|diagnostic| !MANAGED_REFERENCE_KEYS.contains(&diagnostic.key.as_str()))
             .all(|diagnostic| diagnostic.state == RequirementState::Present);
 
         let snapshot = SpaceDiscoverySnapshot {
@@ -167,23 +171,6 @@ where
         self.discovery_snapshots
             .insert(snapshot.discovery_key(), snapshot.clone());
         Ok(snapshot)
-    }
-
-    pub fn discovery_snapshot(&self, domain_id: &str) -> Option<&SpaceDiscoverySnapshot> {
-        let context = self.registry.context(domain_id)?;
-        let key = DiscoverySnapshotKey {
-            space_id: context.binding.space_id.clone(),
-            schema_profile: context.binding.schema_profile.clone(),
-            binding_fingerprint: context
-                .server
-                .repository
-                .binding
-                .binding_fingerprint
-                .clone(),
-        };
-        self.discovery_snapshots
-            .get(&key)
-            .and_then(|snapshot| (snapshot.domain_id == domain_id).then_some(snapshot))
     }
 
     /// Discover views for a list that is already known inside the configured
@@ -223,6 +210,23 @@ impl SpaceDiscoverySnapshot {
 }
 
 impl<T: AnytypeTransport> AppGeneric<T> {
+    pub fn discovery_snapshot(&self, domain_id: &str) -> Option<&SpaceDiscoverySnapshot> {
+        let context = self.registry.context(domain_id)?;
+        let key = DiscoverySnapshotKey {
+            space_id: context.binding.space_id.clone(),
+            schema_profile: context.binding.schema_profile.clone(),
+            binding_fingerprint: context
+                .server
+                .repository
+                .binding
+                .binding_fingerprint
+                .clone(),
+        };
+        self.discovery_snapshots
+            .get(&key)
+            .and_then(|snapshot| (snapshot.domain_id == domain_id).then_some(snapshot))
+    }
+
     fn snapshot_matches_current_binding(&self, snapshot: &SpaceDiscoverySnapshot) -> bool {
         self.registry
             .context(&snapshot.domain_id)
@@ -318,7 +322,13 @@ fn default_schema_diagnostics(
     for (workflow, key, expected_format) in [
         ("Task projection", "description", "text"),
         ("Task projection", "done", "checkbox"),
-    ] {
+    ]
+    .into_iter()
+    .chain(
+        MANAGED_REFERENCE_KEYS
+            .into_iter()
+            .map(|key| ("Materialized reference metadata", key, "text")),
+    ) {
         let observed = properties
             .iter()
             .find(|candidate| candidate.key.as_deref() == Some(key));
