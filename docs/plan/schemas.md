@@ -158,10 +158,29 @@ user-editing and two-principal interoperability remain the separate pilot gate.
 A Person Context is a private local facet for a canonical Contact and is not exposed as
 an additional CardDAV contact by default.
 
-Candidate source-owned cache: exact foreign identity, source display name, bounded
-emails/phones/organization, DAV UID correlation, and source availability. Candidate
-destination-owned fields include private notes/body, personal tags, follow-up state,
-same-Space local relations, and a local title override.
+The implemented source-owned cache includes exact foreign identity, source display name,
+bounded emails/phones/organization, DAV UID correlation, and source availability. Native
+private text properties, tags, and same-Space relations are destination-owned. The
+object body contains the durable materialized record; replacing it with free-text notes
+is not supported.
+
+The visible title is the native top-level `name`, separate from custom properties.
+`person_context_title` in the durable record tracks either `Source { last_written }` or
+`Local` ownership. New contexts derive a useful title from the bounded display name,
+DAV UID, or `Person Context`. Source-owned titles follow renames only while the observed
+native name exactly matches the last applied title. A local edit switches ownership
+permanently to `Local`, including an empty or whitespace-only name, without copying that
+private title into the source cache or managed metadata.
+
+Older records without this marker preserve any observed native title as local. A missing
+native name on an existing object is unknown: no title is written, and the previous
+marker is retained. The optional marker extends version 1; older strict readers reject
+newly enriched records. See the complete [title ownership policy](cross-space-composition.md#field-ownership).
+
+Ambiguous create/update confirmation includes the intended native name, even with
+body-only metadata projection. Fixtures cover initial names, source renames, ordinary
+native title/note edits, local overrides, restart, and timeout readback. These sequential
+checks do not establish concurrent-edit conflict resolution or live interoperability.
 
 ### Event Reference and Daily Plan
 

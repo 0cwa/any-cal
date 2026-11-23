@@ -119,11 +119,31 @@ Every projected field belongs to one of these classes:
 | Derived | source status, stale marker, display summary | Recomputed deterministically |
 | Local override | customized local title/label | Preserved once explicitly changed |
 
-A useful title rule is:
+Person Contexts use Anytype's native object name for their visible title. New contexts
+start with the bounded Contact display name, then DAV UID, then `Person Context` as a
+fallback. The durable reference body records whether that title is source-owned,
+including the last title Any-Cal wrote, or locally owned. A source rename updates the
+native title only when the observed name still exactly matches that last written title.
+A different native name becomes locally owned and stays so across refresh and restart,
+even if a later local edit happens to match the source name. Empty, whitespace-only,
+and Unicode local titles retain their exact text.
 
-- if the reference title still equals the last source-derived title, a source rename
-  may update it;
-- once the user explicitly overrides the local title, refresh preserves the override.
+Existing references without a title ownership marker are treated conservatively: any
+observed native name, including an empty one, belongs to the destination user. A missing
+native name in an existing object is unknown; refresh omits a title write and retains
+the previous ownership marker. It does not infer ownership from an older cached source
+name. This policy is selected by the explicit Person Context operation; generic
+materialized references do not acquire automatic Contact titles.
+
+The marker and name travel in the same create/update request. Timeout recovery verifies
+the intended native name whenever one was written, in addition to the durable record
+and any managed native metadata. The marker is an optional extension to version 1 of
+the materialized body: new code reads older records, while older strict readers cannot
+read records with the new field. This is a pre-production forward-read limitation.
+
+These rules cover sequential user edits and refresh/reopen behavior. The current
+unconditional PATCH path cannot guarantee preservation of edits made concurrently
+between its read and write; it does not provide compare-and-swap conflict resolution.
 
 Schema/property mismatch must never cause Any-Cal to coerce a destination-user-owned
 field into a source-owned field.
@@ -256,6 +276,12 @@ shared Contact or the other user's Space.
 
 The Person Context is **not** exposed as an additional CardDAV contact by default.
 Correctness must not depend on client-side contact deduplication.
+
+The implemented ordinary private editing path is a native text property such as private
+notes, alongside native tags and same-Space relations. Scripted HTTP fixtures edit these
+properties and the native title without editing the materialized JSON, then verify
+refresh and reopen. The object's body still stores the durable reference record;
+arbitrary free-text replacement of that body is not a supported notes editor.
 
 A future virtual/composed address book would need a separate design for field
 provenance, three-way diff, and safe split writes before it can accept whole-vCard PUTs.

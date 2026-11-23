@@ -3,7 +3,9 @@ mod composition_fixture;
 
 use any_cal_anytype_adapter::ANYCAL_PERSON_CONTEXT_TYPE_KEY;
 use any_cal_app::composition::{CompositionAuthorizationError, CompositionSourceScope};
-use any_cal_app::composition_orchestration::MaterializedReferenceRecord;
+use any_cal_app::composition_orchestration::{
+    MaterializedReferenceRecord, PersonContextTitleState,
+};
 use any_cal_app::identity::{
     AccessPolicy, CollectionKind, CredentialSpec, IdentityStore, Operation, PrincipalId,
 };
@@ -197,6 +199,10 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
             .objects
             .get_mut_in_space("space-alice", &alice_id)
             .unwrap();
+        assert_eq!(alice_object.name.as_deref(), Some("Carol Smith"));
+        // Model an ordinary native title edit, without changing the title
+        // ownership marker or the cached source name in the durable body.
+        alice_object.name = Some("Carol · Alice's private context".into());
         let mut alice_record = MaterializedReferenceRecord::from_json(&alice_object.body).unwrap();
         alice_record.reference.user_fields =
             private_person_context_fields("Alice private note", ["friend".to_owned()]);
@@ -271,6 +277,44 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
         .unwrap();
     assert!(!shared_source.body.contains("Alice private note"));
     assert!(!shared_source.body.contains("Bob private note"));
+    for (space, id, title, expected_state) in [
+        (
+            "space-alice",
+            &alice_id,
+            "Carol · Alice's private context",
+            PersonContextTitleState::Local,
+        ),
+        (
+            "space-bob",
+            &bob_id,
+            "Carol Renamed",
+            PersonContextTitleState::Source {
+                last_written: "Carol Renamed".into(),
+            },
+        ),
+    ] {
+        let object = transport.inner.objects.get_in_space(space, id).unwrap();
+        assert_eq!(object.name.as_deref(), Some(title));
+        let record = MaterializedReferenceRecord::from_json(&object.body).unwrap();
+        assert_eq!(record.person_context_title, Some(expected_state));
+        // Native local names are not copied into source-owned caches or the
+        // other principal's object, including after serialization/reopen.
+        assert!(!serde_json::to_string(&record.reference.source_fields)
+            .unwrap()
+            .contains("Alice's private context"));
+    }
+    let alice_title = "Carol · Alice's private context";
+    let bob_object = transport
+        .inner
+        .objects
+        .get_in_space("space-bob", &bob_id)
+        .unwrap();
+    assert!(!serde_json::to_string(bob_object)
+        .unwrap()
+        .contains(alice_title));
+    assert!(!serde_json::to_string(shared_source)
+        .unwrap()
+        .contains(alice_title));
     assert_eq!(
         transport
             .inner
@@ -310,7 +354,42 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
         let body = String::from_utf8(report.body).unwrap();
         assert!(!body.contains(id));
         assert!(!body.contains("private note"));
+        assert!(!body.contains(alice_title));
     }
+
+    let mut reopened = AppWithTransport::with_transport(config(), app.transport_snapshot())
+        .unwrap()
+        .with_identity(identity(), 150);
+    for (principal, domain, token) in [
+        ("alice", "alice-home", "alice-token"),
+        ("bob", "bob-home", "bob-token"),
+    ] {
+        reopened.discover_domain_capabilities(domain).unwrap();
+        reopened
+            .materialize_person_contexts(&profile(principal, domain), token, &scope())
+            .unwrap();
+    }
+    let remote = reopened.transport_snapshot();
+    assert_eq!(
+        remote
+            .inner
+            .objects
+            .get_in_space("space-alice", &alice_id)
+            .unwrap()
+            .name
+            .as_deref(),
+        Some(alice_title)
+    );
+    assert_eq!(
+        remote
+            .inner
+            .objects
+            .get_in_space("space-bob", &bob_id)
+            .unwrap()
+            .name
+            .as_deref(),
+        Some("Carol Renamed")
+    );
 }
 
 #[test]
@@ -398,6 +477,7 @@ fn source_auth_loss_marks_person_context_unavailable_and_exact_reauth_reconnects
             .objects
             .get_mut_in_space("space-alice", &destination_id)
             .unwrap();
+        destination.name = Some("Carol · Keep private".into());
         let mut record = MaterializedReferenceRecord::from_json(&destination.body).unwrap();
         record.reference.user_fields =
             private_person_context_fields("Keep through auth loss", ["private".to_owned()]);
@@ -453,5 +533,18 @@ fn source_auth_loss_marks_person_context_unavailable_and_exact_reauth_reconnects
     assert_eq!(
         restored[0].reference.user_fields["private_notes"],
         "Keep through auth loss"
+    );
+    let remote = app.transport_snapshot();
+    let destination = remote
+        .inner
+        .objects
+        .get_in_space("space-alice", &destination_id)
+        .unwrap();
+    assert_eq!(destination.name.as_deref(), Some("Carol · Keep private"));
+    assert_eq!(
+        MaterializedReferenceRecord::from_json(&destination.body)
+            .unwrap()
+            .person_context_title,
+        Some(PersonContextTitleState::Local)
     );
 }

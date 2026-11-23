@@ -346,6 +346,7 @@ impl WireObject {
         Ok(ObjectRecord {
             id,
             space_id,
+            name: self.name,
             properties,
             property_formats,
             body: decode_markdown_body(self.markdown.or(self.body).unwrap_or_default()),
@@ -538,6 +539,14 @@ where
 }
 
 fn display_name(object: &ObjectRecord) -> Option<String> {
+    if let Some(name) = &object.name {
+        return Some(name.clone());
+    }
+
+    // Only canonical DAV bodies permit legacy name inference. An unrelated
+    // property named `name` must not overwrite an unobserved native title on
+    // an opaque materialized reference or another ordinary Anytype object.
+    let envelope = serde_json::from_str::<ResourceEnvelope>(&object.body).ok()?;
     if let Some(name) = object
         .properties
         .iter()
@@ -548,7 +557,6 @@ fn display_name(object: &ObjectRecord) -> Option<String> {
         }
     }
 
-    let envelope = serde_json::from_str::<ResourceEnvelope>(&object.body).ok()?;
     let field = match envelope.kind {
         any_cal_core::DavKind::Contact => "FN",
         any_cal_core::DavKind::Task => "SUMMARY",

@@ -1,6 +1,7 @@
 use crate::composition::CompositionSourceScope;
 use crate::composition_orchestration::{CompositionOrchestrationError, MaterializationResult};
 use crate::identity::CollectionKind;
+use crate::person_context_titles::ReferencePresentation;
 use crate::AppGeneric;
 use any_cal_anytype_adapter::{
     AnytypeTransport, AnytypeTypedTransport, ANYCAL_PERSON_CONTEXT_TYPE_KEY,
@@ -39,11 +40,12 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
             return Err(PersonContextMaterializationError::InvalidSourceScope);
         }
 
-        self.materialize_references_with_type(
+        self.materialize_references_with_presentation(
             profile,
             token,
             sources,
             ANYCAL_PERSON_CONTEXT_TYPE_KEY,
+            ReferencePresentation::PersonContext,
             |stored| {
                 project_person_context_source(stored)
                     .expect("composition validates Contact kind before Person Context projection")

@@ -605,6 +605,7 @@ fn seeded_transport() -> FakeAnytypeTransport {
             ObjectRecord {
                 id: id.into(),
                 space_id: "space".into(),
+                name: None,
                 properties: vec![],
                 property_formats: BTreeMap::new(),
                 body: envelope.canonical_json().unwrap(),
@@ -1891,6 +1892,7 @@ fn actual_app_dav_seam_supports_conditional_contact_lifecycle() {
         ObjectRecord {
             id: "bootstrap".into(),
             space_id: "space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: envelope.canonical_json().unwrap(),
@@ -1973,6 +1975,7 @@ fn actual_app_dav_seam_supports_vtodo_task_lifecycle() {
         ObjectRecord {
             id: "bootstrap-task".into(),
             space_id: "space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: envelope.canonical_json().unwrap(),

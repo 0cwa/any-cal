@@ -67,7 +67,6 @@ pub fn effective_person_context_title(reference: &MaterializedReference) -> Opti
         .user_fields
         .get(PERSON_CONTEXT_TITLE_OVERRIDE)
         .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
         .or_else(|| {
             reference
