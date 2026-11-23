@@ -2,6 +2,8 @@ use crate::composition::{CompositionAuthorizationError, CompositionSourceScope};
 use crate::identity::CollectionKind;
 use crate::materialized_properties::ReferencePropertyPolicy;
 pub use crate::materialized_properties::{CompositionSchemaError, MetadataProjection};
+pub use crate::person_context_titles::PersonContextTitleState;
+use crate::person_context_titles::{confirms_name_write, ReferencePresentation};
 use crate::AppGeneric;
 use any_cal_anytype_adapter::{
     AnytypeTransport, AnytypeTypedTransport, ObjectRecord, TransportError, DEFAULT_OBJECT_TYPE_KEY,
@@ -30,6 +32,8 @@ pub struct MaterializedReferenceRecord {
     pub source_collection: CollectionKind,
     pub source_resource_id: String,
     pub reference: MaterializedReference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person_context_title: Option<PersonContextTitleState>,
 }
 
 impl MaterializedReferenceRecord {
@@ -49,6 +53,7 @@ impl MaterializedReferenceRecord {
             source_collection: source.collection,
             source_resource_id: resource_id,
             reference,
+            person_context_title: None,
         };
         record.validate()?;
         Ok(record)
@@ -79,6 +84,10 @@ impl MaterializedReferenceRecord {
             || self.source_resource_id.trim().is_empty()
             || self.source_resource_id.chars().any(char::is_control)
             || matches!(self.source_collection, CollectionKind::Composition)
+            || self
+                .person_context_title
+                .as_ref()
+                .is_some_and(|state| !state.is_valid())
         {
             return Err(CompositionOrchestrationError::MalformedDestinationRecord);
         }
@@ -178,6 +187,28 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
         token: &str,
         source_scopes: &[CompositionSourceScope],
         destination_type_key: &str,
+        projector: F,
+    ) -> Result<Vec<MaterializationResult>, CompositionOrchestrationError>
+    where
+        F: Fn(&StoredResource) -> BTreeMap<String, Value>,
+    {
+        self.materialize_references_with_presentation(
+            profile,
+            token,
+            source_scopes,
+            destination_type_key,
+            ReferencePresentation::Unmanaged,
+            projector,
+        )
+    }
+
+    pub(crate) fn materialize_references_with_presentation<F>(
+        &mut self,
+        profile: &CompositionProfile,
+        token: &str,
+        source_scopes: &[CompositionSourceScope],
+        destination_type_key: &str,
+        presentation: ReferencePresentation,
         projector: F,
     ) -> Result<Vec<MaterializationResult>, CompositionOrchestrationError>
     where
@@ -339,16 +370,25 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                 &snapshot,
             )
             .map_err(CompositionOrchestrationError::Composition)?;
-            let persisted = MaterializedReferenceRecord::new(
+            let mut persisted = MaterializedReferenceRecord::new(
                 profile_fingerprint.clone(),
                 source,
                 merge.reference.clone(),
             )?;
+            let title = presentation.reconcile_title(
+                selected_index.is_some(),
+                selected_index.and_then(|index| existing[index].object.name.as_deref()),
+                selected_index
+                    .and_then(|index| existing[index].record.person_context_title.as_ref()),
+                &persisted.reference,
+            );
+            persisted.person_context_title = title.state;
             let body = persisted.canonical_json()?;
 
             let (object, created) = match selected_index {
                 Some(index) => {
                     let mut object = existing[index].object.clone();
+                    object.name = title.name;
                     object.body = body;
                     object.archived = false;
                     property_policy
@@ -384,6 +424,7 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                     let mut object = ObjectRecord {
                         id: placeholder_id,
                         space_id: destination_space,
+                        name: title.name,
                         properties: Vec::new(),
                         property_formats: BTreeMap::new(),
                         body,
@@ -593,6 +634,7 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                     if actual.space_id == object.space_id
                         && actual.id == object.id
                         && observed == *expected_record
+                        && confirms_name_write(object.name.as_deref(), actual.name.as_deref())
                         && property_policy.confirms_write(&object, &actual)
                     {
                         Ok(actual)
@@ -641,7 +683,10 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
         if matching.next().is_some() {
             return Err(CompositionOrchestrationError::DuplicateDestinationReference);
         }
-        if !property_policy.confirms_write(intended, &first.object) {
+        if first.record != *expected
+            || !confirms_name_write(intended.name.as_deref(), first.object.name.as_deref())
+            || !property_policy.confirms_write(intended, &first.object)
+        {
             return Err(CompositionOrchestrationError::DestinationTransport(
                 TransportError::Timeout,
             ));

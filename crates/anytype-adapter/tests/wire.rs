@@ -6,6 +6,7 @@ fn record() -> ObjectRecord {
     ObjectRecord {
         id: "object-1".into(),
         space_id: "space-1".into(),
+        name: None,
         properties: vec![
             ("done".into(), "true".into()),
             ("label".into(), "hello".into()),
@@ -36,6 +37,7 @@ fn live_shaped_list_and_single_wrappers_convert_deterministically() {
     assert_eq!(next.as_deref(), Some("100"));
     assert_eq!(objects[0].space_id, "space-1");
     assert_eq!(objects[0].id, "server-object-1");
+    assert_eq!(objects[0].name.as_deref(), Some("Example"));
     assert!(
         objects[0].body.is_empty(),
         "list responses are summary-only"
@@ -64,8 +66,53 @@ fn live_shaped_list_and_single_wrappers_convert_deterministically() {
     );
     let object = wire::decode_object(&wrapped.to_string(), None).unwrap();
     assert_eq!(object.id, "server-object-1");
+    assert_eq!(object.name.as_deref(), Some("Example"));
     assert_eq!(object.body, "opaque body");
     assert_eq!(object.properties, vec![("score".into(), "3.5".into())]);
+}
+
+#[test]
+fn native_name_round_trips_without_becoming_a_property() {
+    for name in ["Carol · Personal", "", "  "] {
+        let response = json!({"object":{
+            "id":"context-1", "name":name, "markdown":"opaque reference",
+            "properties":[{"key":"private_note","format":"text","text":"keep"}]
+        }});
+        let object = wire::decode_object(&response.to_string(), Some("space-1")).unwrap();
+        assert_eq!(object.name.as_deref(), Some(name));
+        for encoded in [wire::encode_create(&object), wire::encode_update(&object)] {
+            let encoded: serde_json::Value = serde_json::from_str(&encoded.unwrap()).unwrap();
+            assert_eq!(encoded["name"], name);
+            assert_eq!(
+                encoded["properties"],
+                json!([{"key":"private_note","text":"keep"}])
+            );
+        }
+    }
+}
+
+#[test]
+fn absent_native_name_is_not_guessed_from_an_opaque_objects_private_property() {
+    let response = json!({"object":{
+        "id":"context-1", "markdown":"opaque reference",
+        "properties":[{"key":"name","format":"text","text":"Private property"}]
+    }});
+    let object = wire::decode_object(&response.to_string(), Some("space-1")).unwrap();
+    assert!(object.name.is_none());
+    for encoded in [wire::encode_create(&object), wire::encode_update(&object)] {
+        let encoded: serde_json::Value = serde_json::from_str(&encoded.unwrap()).unwrap();
+        assert!(encoded.get("name").is_none());
+        assert_eq!(
+            encoded["properties"],
+            json!([{"key":"name","text":"Private property"}])
+        );
+    }
+    let stored = serde_json::to_value(&object).unwrap();
+    assert!(stored.get("name").is_none());
+    assert!(serde_json::from_value::<ObjectRecord>(stored)
+        .unwrap()
+        .name
+        .is_none());
 }
 
 #[test]
@@ -312,9 +359,10 @@ fn property_link_fixture_uses_tagged_values_not_the_rejected_bare_shape() {
 
 #[test]
 fn create_uses_the_dav_display_name_without_turning_it_into_a_property() {
-    let record = ObjectRecord {
+    let mut record = ObjectRecord {
         id: "dav-uid-1".into(),
         space_id: "space-1".into(),
+        name: None,
         properties: vec![("dav_uid".into(), "dav-uid-1".into())],
         property_formats: BTreeMap::new(),
         body: r#"{"collection_id":"contacts","resource_id":"contact-1","kind":"contact","anytype_object_id":"dav-uid-1","dav_uid":"dav-uid-1","document":{"version":1,"content":{"fields":{"FN":[{"value":"Ada Lovelace"}]} }},"revision":0}"#.into(),
@@ -329,4 +377,19 @@ fn create_uses_the_dav_display_name_without_turning_it_into_a_property() {
         .unwrap()
         .iter()
         .all(|property| property["key"] != "name"));
+
+    // Keep the legacy property precedence for canonical DAV objects while an
+    // explicit native name always wins, including an explicit empty value.
+    record
+        .properties
+        .push(("name".into(), "Property title".into()));
+    let encoded: serde_json::Value =
+        serde_json::from_str(&wire::encode_update(&record).unwrap()).unwrap();
+    assert_eq!(encoded["name"], "Property title");
+    for explicit in ["Native title", ""] {
+        record.name = Some(explicit.into());
+        let encoded: serde_json::Value =
+            serde_json::from_str(&wire::encode_update(&record).unwrap()).unwrap();
+        assert_eq!(encoded["name"], explicit);
+    }
 }

@@ -604,6 +604,7 @@ fn managed_source_metadata_refreshes_while_private_same_space_relation_survives_
         transport.inner.objects.insert_object(ObjectRecord {
             id: "local-project".into(),
             space_id: "space-home".into(),
+            name: None,
             properties: Vec::new(),
             property_formats: BTreeMap::new(),
             body: "ordinary local object".into(),

@@ -88,6 +88,7 @@ fn object_record() -> any_cal_anytype_adapter::ObjectRecord {
     any_cal_anytype_adapter::ObjectRecord {
         id: "obj".into(),
         space_id: "space".into(),
+        name: None,
         properties: vec![("description".into(), "Example".into())],
         property_formats: BTreeMap::new(),
         body: "{}".into(),

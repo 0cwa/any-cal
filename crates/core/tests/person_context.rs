@@ -141,24 +141,24 @@ fn source_rename_updates_default_title_but_never_overwrites_local_title_override
         Some("Carol New")
     );
 
-    let mut customized = plain;
-    customized.user_fields = BTreeMap::from([(
-        PERSON_CONTEXT_TITLE_OVERRIDE.into(),
-        json!("Carol · Private"),
-    )]);
-    let refreshed = reconcile_source_snapshot(Some(&customized), &updated).unwrap();
-    assert_eq!(
-        effective_person_context_title(&refreshed.reference).as_deref(),
-        Some("Carol · Private")
-    );
-    assert_eq!(
-        refreshed.reference.source_fields[PERSON_CONTEXT_DISPLAY_NAME],
-        "Carol New"
-    );
-    assert_eq!(
-        refreshed.reference.user_fields[PERSON_CONTEXT_TITLE_OVERRIDE],
-        "Carol · Private"
-    );
+    for local_title in ["Carol · Private", "", "  ", "卡萝尔 🌿"] {
+        let mut customized = plain.clone();
+        customized.user_fields =
+            BTreeMap::from([(PERSON_CONTEXT_TITLE_OVERRIDE.into(), json!(local_title))]);
+        let refreshed = reconcile_source_snapshot(Some(&customized), &updated).unwrap();
+        assert_eq!(
+            effective_person_context_title(&refreshed.reference).as_deref(),
+            Some(local_title)
+        );
+        assert_eq!(
+            refreshed.reference.source_fields[PERSON_CONTEXT_DISPLAY_NAME],
+            "Carol New"
+        );
+        assert_eq!(
+            refreshed.reference.user_fields[PERSON_CONTEXT_TITLE_OVERRIDE],
+            local_title
+        );
+    }
 }
 
 #[test]

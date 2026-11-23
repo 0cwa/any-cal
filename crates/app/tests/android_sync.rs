@@ -72,6 +72,7 @@ fn android_pull_returns_canonical_contact_payload_and_checkpoint() {
         ObjectRecord {
             id: "object-contact".into(),
             space_id: "android-space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: contact.canonical_json().unwrap(),

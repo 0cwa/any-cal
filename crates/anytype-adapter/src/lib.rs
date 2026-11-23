@@ -166,6 +166,10 @@ impl ObjectLocks {
 pub struct ObjectRecord {
     pub id: String,
     pub space_id: String,
+    /// Native top-level Anytype name. `None` means unobserved/unspecified;
+    /// `Some("")` retains an explicit empty name rather than deriving a title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub properties: Vec<(String, String)>,
     /// The Anytype property format for each key returned by the API.  Keeping
     /// this separately from the DAV-facing string value lets updates carry
@@ -1139,6 +1143,7 @@ impl AnytypeTransport for HttpAnytypeTransport {
             return Ok(ObjectRecord {
                 id: id.into(),
                 space_id: space.into(),
+                name: None,
                 properties: Vec::new(),
                 property_formats: BTreeMap::new(),
                 body: String::new(),
@@ -1162,6 +1167,7 @@ impl AnytypeTransport for HttpAnytypeTransport {
             return Ok(ObjectRecord {
                 id: id.into(),
                 space_id: space.into(),
+                name: None,
                 properties: Vec::new(),
                 property_formats: BTreeMap::new(),
                 body: String::new(),
@@ -1502,6 +1508,7 @@ impl<T: AnytypeTransport> Repository for AnytypeRepository<T> {
                 let expected = ObjectRecord {
                     id: object_id.clone(),
                     space_id: self.binding.space_id.clone(),
+                    name: None,
                     properties: Vec::new(),
                     property_formats: BTreeMap::new(),
                     body: String::new(),
@@ -1558,6 +1565,7 @@ impl<T: AnytypeTransport> Repository for AnytypeRepository<T> {
                 let expected = ObjectRecord {
                     id: object_id.clone(),
                     space_id: self.binding.space_id.clone(),
+                    name: None,
                     properties: Vec::new(),
                     property_formats: BTreeMap::new(),
                     body: String::new(),
@@ -1951,6 +1959,7 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
                         ObjectRecord {
                             id: object_id.into(),
                             space_id: self.binding.space_id.clone(),
+                            name: None,
                             properties: Vec::new(),
                             property_formats: BTreeMap::new(),
                             body: String::new(),
@@ -1979,6 +1988,9 @@ impl<T: AnytypeTransport> AnytypeRepository<T> {
         Ok(ObjectRecord {
             id: envelope.anytype_object_id.to_string(),
             space_id: self.binding.space_id.clone(),
+            // Canonical writes derive a fresh FN/SUMMARY name from this body;
+            // carrying an old native GET name would hide a DAV title change.
+            name: None,
             properties: match self.property_write_mode {
                 PropertyWriteMode::CanonicalBodyOnly => Vec::new(),
                 PropertyWriteMode::Projected => projected_properties(envelope),

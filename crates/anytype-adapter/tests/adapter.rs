@@ -16,6 +16,7 @@ fn object(id: &str, space: &str) -> ObjectRecord {
     ObjectRecord {
         id: id.into(),
         space_id: space.into(),
+        name: None,
         properties: vec![("Name".into(), id.into())],
         property_formats: BTreeMap::new(),
         body: format!("line one\n{id}"),
@@ -324,6 +325,7 @@ fn repository_reads_hydrate_empty_cache_with_pages_and_etags() {
             ObjectRecord {
                 id: e.anytype_object_id.to_string(),
                 space_id: "space".into(),
+                name: None,
                 properties: vec![],
                 property_formats: BTreeMap::new(),
                 body: e.canonical_json().unwrap(),
@@ -482,6 +484,7 @@ fn update_carries_unknown_anytype_properties_forward() {
         ObjectRecord {
             id: e.anytype_object_id.to_string(),
             space_id: "space".into(),
+            name: None,
             properties: vec![
                 ("custom_label".into(), "keep-me".into()),
                 ("creator".into(), "system-user".into()),
@@ -512,6 +515,104 @@ fn update_carries_unknown_anytype_properties_forward() {
 }
 
 #[test]
+fn canonical_http_update_derives_fresh_name_instead_of_replaying_native_get_name() {
+    use any_cal_anytype_adapter::{HttpAnytypeTransport, HttpExchange};
+    use serde_json::{json, Value};
+    use std::collections::VecDeque;
+
+    struct RenameExchange {
+        steps: VecDeque<(String, Value)>,
+        requests: Arc<Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl HttpExchange for RenameExchange {
+        fn exchange(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            let text = std::str::from_utf8(request).unwrap();
+            let (headers, body) = text.split_once("\r\n\r\n").unwrap();
+            let line = headers.lines().next().unwrap();
+            let (expected, response) = self.steps.pop_front().expect("unexpected request");
+            assert_eq!(line, expected);
+            let body = if body.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_str(body).unwrap()
+            };
+            self.requests.lock().unwrap().push((line.into(), body));
+            let response = response.to_string();
+            Ok(format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{response}",
+                response.len()
+            ).into_bytes())
+        }
+    }
+
+    for (collection, kind, field) in [
+        ("contacts", DavKind::Contact, "FN"),
+        ("tasks", DavKind::Task, "SUMMARY"),
+    ] {
+        let mut before = envelope(collection, "canonical", kind);
+        before.document.content.fields.insert(
+            field.into(),
+            vec![any_cal_core::Occurrence::new("Old canonical title")],
+        );
+        let mut after = before.clone();
+        after.document.content.fields.get_mut(field).unwrap()[0].value = "Renamed from DAV".into();
+        let native_response = |envelope: &ResourceEnvelope, name: &str| {
+            json!({"object":{
+                "id":"obj-canonical", "name":name,
+                "markdown":format!("```json\n{}\n```", envelope.canonical_json().unwrap()),
+                "properties":[{"key":"private_note","format":"text","text":"Keep native property"}]
+            }})
+        };
+        let previous = native_response(&before, "Existing native title");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let exchange = RenameExchange {
+            steps: [
+                (
+                    "GET /v1/spaces/space/objects HTTP/1.1".into(),
+                    json!({"data":[{"id":"obj-canonical","name":"Existing native title"}]}),
+                ),
+                (
+                    "GET /v1/spaces/space/objects/obj-canonical HTTP/1.1".into(),
+                    previous.clone(),
+                ),
+                (
+                    "GET /v1/spaces/space/objects/obj-canonical HTTP/1.1".into(),
+                    previous,
+                ),
+                (
+                    "PATCH /v1/spaces/space/objects/obj-canonical HTTP/1.1".into(),
+                    native_response(&after, "Renamed from DAV"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            requests: Arc::clone(&requests),
+        };
+        let transport = HttpAnytypeTransport::new(
+            "http://127.0.0.1:1",
+            "2025-11-08",
+            Some("fixture-token".into()),
+        )
+        .unwrap()
+        .with_exchange(Box::new(exchange));
+        let mut repository = AnytypeRepository::new(transport, "space");
+        repository
+            .update_resource(after, any_cal_core::WriteCondition::Unconditional)
+            .unwrap();
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        let patch = &requests[3].1;
+        assert_eq!(patch["name"], "Renamed from DAV");
+        assert_eq!(
+            patch["properties"],
+            json!([{"key":"private_note","text":"Keep native property"}])
+        );
+        assert!(patch.get("type_key").is_none());
+    }
+}
+
+#[test]
 fn refresh_is_atomic_and_replaces_stale_rows() {
     let original = envelope("contacts", "c1", DavKind::Contact);
     let mut fake = FakeAnytypeTransport::new(1);
@@ -520,6 +621,7 @@ fn refresh_is_atomic_and_replaces_stale_rows() {
         ObjectRecord {
             id: "obj-c1".into(),
             space_id: "space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: original.canonical_json().unwrap(),
@@ -543,6 +645,7 @@ fn refresh_is_atomic_and_replaces_stale_rows() {
         ObjectRecord {
             id: "obj-c1".into(),
             space_id: "space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: changed.canonical_json().unwrap(),
@@ -560,6 +663,7 @@ fn refresh_is_atomic_and_replaces_stale_rows() {
         ObjectRecord {
             id: "obj-bad".into(),
             space_id: "space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: r#"{"resource_id":"bad","document":{}}"#.into(),
@@ -592,6 +696,7 @@ fn malformed_remote_envelope_is_an_explicit_error() {
         ObjectRecord {
             id: "bad".into(),
             space_id: "space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: r#"{"dav_uid":"bad"}"#.into(),
@@ -628,6 +733,7 @@ fn archive_is_confirmed_and_omitted_from_normal_relist() {
     fake.create_object(ObjectRecord {
         id: e.anytype_object_id.to_string(),
         space_id: "space".into(),
+        name: None,
         properties: projected_anytype_properties(&e),
         property_formats: BTreeMap::new(),
         body: e.canonical_json().unwrap(),
@@ -724,6 +830,7 @@ fn repository_projects_properties_and_hides_archived_or_wrong_kind_objects() {
             ObjectRecord {
                 id: e.anytype_object_id.to_string(),
                 space_id: "space".into(),
+                name: None,
                 properties: if e.resource_id.as_str() == "c1" {
                     vec![
                         ("dav_uid".into(), e.dav_uid.to_string()),
@@ -766,6 +873,7 @@ fn unrelated_anytype_pages_are_ignored_during_hydration() {
         ObjectRecord {
             id: "ordinary-note".into(),
             space_id: "space".into(),
+            name: None,
             properties: vec![("title".into(), "A normal Anytype page".into())],
             property_formats: BTreeMap::from([("title".into(), "text".into())]),
             body: "This is not an Any-Cal envelope".into(),
@@ -778,6 +886,7 @@ fn unrelated_anytype_pages_are_ignored_during_hydration() {
         ObjectRecord {
             id: "obj-c1".into(),
             space_id: "space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: contact.canonical_json().unwrap(),
@@ -802,6 +911,7 @@ fn delayed_read_is_typed_through_repository() {
         ObjectRecord {
             id: e.anytype_object_id.to_string(),
             space_id: "space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: e.canonical_json().unwrap(),
@@ -826,6 +936,7 @@ fn server_id_mismatch_is_adopted_when_dav_identity_matches() {
         ObjectRecord {
             id: "wrong-object-id".into(),
             space_id: "space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: e.canonical_json().unwrap(),
@@ -854,6 +965,7 @@ fn delayed_visibility_is_distinct_from_not_found() {
         ObjectRecord {
             id: e.anytype_object_id.to_string(),
             space_id: "space".into(),
+            name: None,
             properties: vec![],
             property_formats: BTreeMap::new(),
             body: e.canonical_json().unwrap(),

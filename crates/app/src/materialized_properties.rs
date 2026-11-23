@@ -310,6 +310,7 @@ mod tests {
         ObjectRecord {
             id: "context".into(),
             space_id: "private-space".into(),
+            name: None,
             properties: vec![
                 (ANYCAL_SOURCE_DAV_UID_PROPERTY_KEY.into(), "old-uid".into()),
                 ("private_notes".into(), "Only in my Space".into()),
@@ -347,6 +348,7 @@ mod tests {
             source_domain_id: "shared".into(),
             source_collection: crate::identity::CollectionKind::Contacts,
             source_resource_id: "source-contact.vcf".into(),
+            person_context_title: None,
             reference: MaterializedReference::new(&source).unwrap(),
         }
     }

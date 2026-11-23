@@ -28,6 +28,7 @@ mod http;
 pub mod identity;
 mod materialized_properties;
 pub mod person_context;
+mod person_context_titles;
 
 pub use config::{parse_cli, AppConfig, ConfigError};
 
