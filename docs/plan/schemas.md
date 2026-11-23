@@ -96,8 +96,62 @@ Materialized schemas distinguish:
 - **derived** availability/staleness state;
 - **local overrides** such as an explicit private title.
 
-Missing or wrong-format schema falls back to a reduced/body-only representation rather
-than coercing a private field into source ownership.
+Missing optional native metadata keeps the body-only representation usable. An
+incompatible or ambiguous managed property fails before mutation; Any-Cal does not
+coerce a private value into a source-owned field.
+
+### Native reference metadata
+
+The materialized record's JSON body remains the authority for foreign identity,
+composition provenance, cached source fields, and private `user_fields`. The following
+eight optional native **text** properties form one managed group:
+
+| Stable property key | Source-owned value |
+| --- | --- |
+| `anycal_profile_fingerprint` | Principal/destination/source composition profile fingerprint |
+| `anycal_foreign_identity` | Exact foreign identity fingerprint |
+| `anycal_source_account_fingerprint` | Source upstream-account fingerprint |
+| `anycal_source_space_id` | Source Space ID |
+| `anycal_source_object_id` | Source object ID |
+| `anycal_source_kind` | `contact`, `contact_group`, `task`, or `event` |
+| `anycal_source_dav_uid` | Optional DAV UID correlation; an absent UID is written as empty text |
+| `anycal_source_status` | `available`, `archived`, `deleted`, or `unavailable` |
+
+Projection uses `discover_domain_capabilities(destination_domain)` and its existing
+snapshot, qualified by domain, upstream-account/binding fingerprint, Space, and schema
+profile. Display names never identify types or properties. Every managed key must exist
+exactly once with the `text` format before the group is written. A missing optional key
+disables the whole native group; a wrong format or duplicate key returns a bounded
+schema error before a destination mutation. Existing managed values must also have
+unambiguous text formats before Any-Cal replaces them.
+
+Generic `materialize_references` can use the built-in `page` type without discovery or
+custom metadata. Explicit typed operations, including `materialize_person_contexts`,
+require a current snapshot containing the requested usable native type even when the
+optional metadata group is absent. Discovery is read-only: these calls do not create
+types or properties. Rediscover after restart, a failed discovery refresh, or upstream
+schema changes. Binding qualification prevents reuse in a different context; it does
+not detect a later remote schema edit without another discovery request.
+
+Materialization results report `BodyOnly` or `Native` metadata projection. Discovery
+diagnostics identify individual missing or incompatible keys. Missing optional metadata
+does not make canonical body-only DAV storage unavailable.
+
+The managed ownership set is fixed, including the optional UID. Native refresh sends
+empty text when a previously stored UID disappears, instead of leaving its old value
+through PATCH omission. Body-only refresh omits all unvalidated managed keys; it neither
+clears nor treats an older remote native value as authoritative. Private properties,
+including ordinary text notes, tags, and same-Space object relations, stay outside the
+managed group and retain their values and formats. Known read-only system fields are
+filtered by the shared HTTP update encoder.
+
+After an ambiguous native write, readback must confirm the intended managed values and
+formats as well as the durable record. Equal bodies alone cannot confirm a metadata-only
+update; an unconfirmed write remains a timeout rather than a reported refresh success.
+
+Scripted HTTP tests cover schema discovery, create, hydration, refresh, PATCH, and
+reopen. They establish the request contract and ownership boundary; live Anytype
+user-editing and two-principal interoperability remain the separate pilot gate.
 
 ### Person Context
 

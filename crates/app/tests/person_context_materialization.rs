@@ -1,95 +1,34 @@
-use any_cal_anytype_adapter::{
-    AnytypeTransport, AnytypeTypedTransport, FakeAnytypeTransport, ObjectRecord, Page,
-    TransportError,
-};
+#[path = "support/composition_fixture.rs"]
+mod composition_fixture;
+
+use any_cal_anytype_adapter::ANYCAL_PERSON_CONTEXT_TYPE_KEY;
 use any_cal_app::composition::{CompositionAuthorizationError, CompositionSourceScope};
 use any_cal_app::composition_orchestration::MaterializedReferenceRecord;
 use any_cal_app::identity::{
     AccessPolicy, CollectionKind, CredentialSpec, IdentityStore, Operation, PrincipalId,
 };
 use any_cal_app::person_context::private_person_context_fields;
-use any_cal_app::{App, AppConfig, AppWithTransport};
+use any_cal_app::{AppConfig, AppWithTransport};
 use any_cal_core::{
     CompositionProfile, ProjectionPolicy, RefreshKind, ResourceEnvelope, SourceAvailability,
 };
 use any_cal_dav_server::Request;
+use composition_fixture::{CompositionFixtureTransport, CompositionSchemaFixture};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug)]
-struct SpaceFaultTransport {
-    inner: FakeAnytypeTransport,
-    fail_shared_auth: bool,
-}
-
-impl SpaceFaultTransport {
-    fn new() -> Self {
-        Self {
-            inner: FakeAnytypeTransport::new(32),
-            fail_shared_auth: false,
-        }
-    }
-
-    fn read_preflight(&self, space_id: &str) -> Result<(), TransportError> {
-        if self.fail_shared_auth && space_id == "space-shared" {
-            Err(TransportError::Auth)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl AnytypeTransport for SpaceFaultTransport {
-    fn list_objects(
-        &mut self,
-        space_id: &str,
-        cursor: Option<&str>,
-    ) -> Result<Page<ObjectRecord>, TransportError> {
-        self.read_preflight(space_id)?;
-        self.inner.list_objects(space_id, cursor)
-    }
-
-    fn get_object(
-        &mut self,
-        space_id: &str,
-        object_id: &str,
-    ) -> Result<ObjectRecord, TransportError> {
-        self.read_preflight(space_id)?;
-        self.inner.get_object(space_id, object_id)
-    }
-
-    fn create_object(&mut self, object: ObjectRecord) -> Result<ObjectRecord, TransportError> {
-        self.inner.create_object(object)
-    }
-
-    fn update_object(&mut self, object: ObjectRecord) -> Result<ObjectRecord, TransportError> {
-        self.inner.update_object(object)
-    }
-
-    fn archive_object(
-        &mut self,
-        space_id: &str,
-        object_id: &str,
-    ) -> Result<ObjectRecord, TransportError> {
-        self.inner.archive_object(space_id, object_id)
-    }
-
-    fn delete_object(
-        &mut self,
-        space_id: &str,
-        object_id: &str,
-    ) -> Result<ObjectRecord, TransportError> {
-        self.inner.delete_object(space_id, object_id)
-    }
-}
-
-impl AnytypeTypedTransport for SpaceFaultTransport {
-    fn create_object_with_type(
-        &mut self,
-        object: ObjectRecord,
-        type_key: &str,
-    ) -> Result<ObjectRecord, TransportError> {
-        self.inner.create_object_with_type(object, type_key)
-    }
+fn transport() -> CompositionFixtureTransport {
+    CompositionFixtureTransport::new(
+        100,
+        ["space-alice", "space-bob"]
+            .into_iter()
+            .map(|space| {
+                (
+                    space.into(),
+                    CompositionSchemaFixture::new(&[ANYCAL_PERSON_CONTEXT_TYPE_KEY], &[]),
+                )
+            })
+            .collect(),
+    )
 }
 
 fn config() -> AppConfig {
@@ -223,7 +162,9 @@ fn scope() -> Vec<CompositionSourceScope> {
 
 #[test]
 fn same_shared_contact_materializes_as_two_independent_private_person_contexts() {
-    let mut app = App::fake(config()).unwrap();
+    let mut app = AppWithTransport::with_transport(config(), transport()).unwrap();
+    app.discover_domain_capabilities("alice-home").unwrap();
+    app.discover_domain_capabilities("bob-home").unwrap();
     assert_eq!(
         app.handle(request(
             "PUT",
@@ -252,6 +193,7 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
 
     app.with_transport_mut(|transport| {
         let alice_object = transport
+            .inner
             .objects
             .get_mut_in_space("space-alice", &alice_id)
             .unwrap();
@@ -261,6 +203,7 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
         alice_object.body = alice_record.canonical_json().unwrap();
 
         let bob_object = transport
+            .inner
             .objects
             .get_mut_in_space("space-bob", &bob_id)
             .unwrap();
@@ -271,6 +214,7 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
 
         let source_id = alice[0].reference.foreign.source_object_id.clone();
         let source = transport
+            .inner
             .objects
             .get_mut_in_space("space-shared", &source_id)
             .unwrap();
@@ -313,13 +257,14 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
 
     let transport = app.transport_snapshot();
     assert_eq!(
-        transport.create_type_keys,
+        transport.inner.create_type_keys,
         vec![
             any_cal_anytype_adapter::ANYCAL_PERSON_CONTEXT_TYPE_KEY.to_owned(),
             any_cal_anytype_adapter::ANYCAL_PERSON_CONTEXT_TYPE_KEY.to_owned(),
         ]
     );
     let shared_source = transport
+        .inner
         .objects
         .values()
         .find(|object| object.space_id == "space-shared")
@@ -328,6 +273,7 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
     assert!(!shared_source.body.contains("Bob private note"));
     assert_eq!(
         transport
+            .inner
             .objects
             .values()
             .filter(|object| {
@@ -339,6 +285,7 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
     );
     assert_eq!(
         transport
+            .inner
             .objects
             .values()
             .filter(|object| {
@@ -369,7 +316,8 @@ fn same_shared_contact_materializes_as_two_independent_private_person_contexts()
 #[test]
 fn person_context_materialization_is_idempotent_after_reopen() {
     // Keep the same account-context seam on both sides of the restart.
-    let mut app = App::with_transport(config(), FakeAnytypeTransport::new(100)).unwrap();
+    let mut app = AppWithTransport::with_transport(config(), transport()).unwrap();
+    app.discover_domain_capabilities("alice-home").unwrap();
     assert_eq!(
         app.handle(request(
             "PUT",
@@ -390,10 +338,11 @@ fn person_context_materialization_is_idempotent_after_reopen() {
     let source_binding = app.upstream_binding_identity("shared");
 
     let remote = app.transport_snapshot();
-    let mut reopened = App::with_transport(config(), remote)
+    let mut reopened = AppWithTransport::with_transport(config(), remote)
         .unwrap()
         .with_identity(identity(), 150);
     assert_eq!(reopened.upstream_binding_identity("shared"), source_binding);
+    reopened.discover_domain_capabilities("alice-home").unwrap();
     let second = reopened
         .materialize_person_contexts(&profile("alice", "alice-home"), "alice-token", &scope())
         .unwrap();
@@ -405,6 +354,7 @@ fn person_context_materialization_is_idempotent_after_reopen() {
     let remote = reopened.transport_snapshot();
     assert_eq!(
         remote
+            .inner
             .objects
             .values()
             .filter(|object| {
@@ -415,14 +365,15 @@ fn person_context_materialization_is_idempotent_after_reopen() {
         1
     );
     assert_eq!(
-        remote.create_type_keys,
+        remote.inner.create_type_keys,
         vec![any_cal_anytype_adapter::ANYCAL_PERSON_CONTEXT_TYPE_KEY.to_owned()]
     );
 }
 
 #[test]
 fn source_auth_loss_marks_person_context_unavailable_and_exact_reauth_reconnects_it() {
-    let mut app = AppWithTransport::with_transport(config(), SpaceFaultTransport::new()).unwrap();
+    let mut app = AppWithTransport::with_transport(config(), transport()).unwrap();
+    app.discover_domain_capabilities("alice-home").unwrap();
     assert_eq!(
         app.handle(request(
             "PUT",
@@ -451,7 +402,7 @@ fn source_auth_loss_marks_person_context_unavailable_and_exact_reauth_reconnects
         record.reference.user_fields =
             private_person_context_fields("Keep through auth loss", ["private".to_owned()]);
         destination.body = record.canonical_json().unwrap();
-        transport.fail_shared_auth = true;
+        transport.denied_read_spaces.insert("space-shared".into());
     });
 
     let unavailable = app
@@ -473,7 +424,7 @@ fn source_auth_loss_marks_person_context_unavailable_and_exact_reauth_reconnects
     );
 
     // Transport recovery alone must not clear the authorization suspension.
-    app.with_transport_mut(|transport| transport.fail_shared_auth = false);
+    app.with_transport_mut(|transport| transport.denied_read_spaces.clear());
     assert!(!app.reauthorize_upstream_domain("shared", "wrong-account", &source_space));
     assert!(!app.reauthorize_upstream_domain("shared", &account_fingerprint, "wrong-space"));
     assert_eq!(

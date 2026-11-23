@@ -1,8 +1,14 @@
+#[path = "support/composition_fixture.rs"]
+mod composition_fixture;
+
 use any_cal_anytype_adapter::{
-    AmbiguousMutation, HttpAnytypeTransport, HttpExchange, ObjectRecord, TransportError,
-    ANYCAL_FOREIGN_IDENTITY_PROPERTY_KEY,
-    ANYCAL_PRIVATE_RELATIONS_PROPERTY_KEY, ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY,
+    AmbiguousMutation, AnytypeTransport, HttpAnytypeTransport, HttpExchange, ObjectRecord,
+    TransportError, ANYCAL_FOREIGN_IDENTITY_PROPERTY_KEY, ANYCAL_PERSON_CONTEXT_TYPE_KEY,
+    ANYCAL_PRIVATE_RELATIONS_PROPERTY_KEY, ANYCAL_PROFILE_FINGERPRINT_PROPERTY_KEY,
+    ANYCAL_SOURCE_ACCOUNT_FINGERPRINT_PROPERTY_KEY, ANYCAL_SOURCE_DAV_UID_PROPERTY_KEY,
+    ANYCAL_SOURCE_KIND_PROPERTY_KEY, ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY,
     ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY, ANYCAL_SOURCE_STATUS_PROPERTY_KEY,
+    DEFAULT_OBJECT_TYPE_KEY,
 };
 use any_cal_app::composition::CompositionSourceScope;
 use any_cal_app::composition_orchestration::{
@@ -14,6 +20,7 @@ use any_cal_app::identity::{
 use any_cal_app::{App, AppConfig, AppGeneric};
 use any_cal_core::{CompositionProfile, ProjectionPolicy, RefreshKind, ResourceEnvelope};
 use any_cal_dav_server::Request;
+use composition_fixture::{CompositionFixtureTransport, CompositionSchemaFixture};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -152,7 +159,26 @@ fn identity() -> IdentityStore {
 }
 
 fn seed() -> App {
-    let mut app = App::fake(config()).unwrap();
+    seed_app(App::fake(config()).unwrap())
+}
+
+fn seed_with_schema(properties: &[(&str, &str)]) -> AppGeneric<CompositionFixtureTransport> {
+    let transport = CompositionFixtureTransport::new(
+        100,
+        BTreeMap::from([(
+            "space-home".into(),
+            CompositionSchemaFixture::new(
+                &[DEFAULT_OBJECT_TYPE_KEY, ANYCAL_PERSON_CONTEXT_TYPE_KEY],
+                properties,
+            ),
+        )]),
+    );
+    let mut app = seed_app(AppGeneric::with_transport(config(), transport).unwrap());
+    app.discover_domain_capabilities("home").unwrap();
+    app
+}
+
+fn seed_app<T: AnytypeTransport>(mut app: AppGeneric<T>) -> AppGeneric<T> {
     assert_eq!(
         app.handle(req(
             "PUT",
@@ -437,14 +463,15 @@ fn http_refresh_filters_system_properties_and_preserves_private_native_fields() 
     assert_eq!(script.requests.len(), 5);
     let patch: serde_json::Value =
         serde_json::from_str(script.requests[4].split_once("\r\n\r\n").unwrap().1).unwrap();
-    assert_eq!(
-        patch["properties"],
-        json!([
-            {"key":"private_notes","text":"Private café note"},
-            {"key":"private_tags","multi_select":["follow-up","friends"]},
-            {"key":"private_relations","objects":["home-project","home-note"]}
-        ])
-    );
+    let patch_properties = patch["properties"].as_array().unwrap();
+    assert_eq!(patch_properties.len(), 3);
+    for expected in [
+        json!({"key":"private_notes","text":"Private café note"}),
+        json!({"key":"private_tags","multi_select":["follow-up","friends"]}),
+        json!({"key":"private_relations","objects":["home-project","home-note"]}),
+    ] {
+        assert!(patch_properties.contains(&expected));
+    }
     assert!(patch.get("type_key").is_none());
     assert!(patch.get("body").is_none());
     let persisted = MaterializedReferenceRecord::from_json(
@@ -500,7 +527,7 @@ fn ambiguous_create_is_reconciled_without_duplicate_materialization() {
 
 #[test]
 fn typed_materialization_uses_explicit_type_key_while_default_stays_page() {
-    let mut typed = seed();
+    let mut typed = seed_with_schema(&[]);
     typed
         .materialize_references_with_type(
             &profile(),
@@ -515,9 +542,16 @@ fn typed_materialization_uses_explicit_type_key_while_default_stays_page() {
         )
         .unwrap();
     assert_eq!(
-        typed.transport_snapshot().create_type_keys,
+        typed.transport_snapshot().inner.create_type_keys,
         vec![any_cal_anytype_adapter::ANYCAL_PERSON_CONTEXT_TYPE_KEY.to_owned()]
     );
+    assert!(typed
+        .transport_snapshot()
+        .inner
+        .objects
+        .values()
+        .filter(|object| object.space_id == "space-home")
+        .all(|object| object.properties.is_empty()));
 
     let mut default = seed();
     default
@@ -538,10 +572,18 @@ fn typed_materialization_uses_explicit_type_key_while_default_stays_page() {
     );
 }
 
-
 #[test]
 fn managed_source_metadata_refreshes_while_private_same_space_relation_survives_reopen() {
-    let mut app = seed();
+    let mut app = seed_with_schema(&[
+        (ANYCAL_PROFILE_FINGERPRINT_PROPERTY_KEY, "text"),
+        (ANYCAL_FOREIGN_IDENTITY_PROPERTY_KEY, "text"),
+        (ANYCAL_SOURCE_ACCOUNT_FINGERPRINT_PROPERTY_KEY, "text"),
+        (ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY, "text"),
+        (ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY, "text"),
+        (ANYCAL_SOURCE_KIND_PROPERTY_KEY, "text"),
+        (ANYCAL_SOURCE_DAV_UID_PROPERTY_KEY, "text"),
+        (ANYCAL_SOURCE_STATUS_PROPERTY_KEY, "text"),
+    ]);
     let result = app
         .materialize_references(
             &profile(),
@@ -559,7 +601,7 @@ fn managed_source_metadata_refreshes_while_private_same_space_relation_survives_
     let foreign_identity = result[0].reference.foreign.identity_fingerprint().unwrap();
 
     app.with_transport_mut(|transport| {
-        transport.objects.insert_object(ObjectRecord {
+        transport.inner.objects.insert_object(ObjectRecord {
             id: "local-project".into(),
             space_id: "space-home".into(),
             properties: Vec::new(),
@@ -570,6 +612,7 @@ fn managed_source_metadata_refreshes_while_private_same_space_relation_survives_
         });
 
         let context = transport
+            .inner
             .objects
             .get_mut_in_space("space-home", &context_id)
             .unwrap();
@@ -583,6 +626,7 @@ fn managed_source_metadata_refreshes_while_private_same_space_relation_survives_
         );
 
         let source = transport
+            .inner
             .objects
             .get_mut_in_space("space-shared", &source_id)
             .unwrap();
@@ -593,9 +637,10 @@ fn managed_source_metadata_refreshes_while_private_same_space_relation_survives_
     });
 
     let remote = app.transport_snapshot();
-    let mut reopened = App::with_transport(config(), remote)
+    let mut reopened = AppGeneric::with_transport(config(), remote)
         .unwrap()
         .with_identity(identity(), 150);
+    reopened.discover_domain_capabilities("home").unwrap();
     reopened
         .materialize_references(
             &profile(),
@@ -611,6 +656,7 @@ fn managed_source_metadata_refreshes_while_private_same_space_relation_survives_
 
     let remote = reopened.transport_snapshot();
     let context = remote
+        .inner
         .objects
         .get_in_space("space-home", &context_id)
         .unwrap();
@@ -628,7 +674,10 @@ fn managed_source_metadata_refreshes_while_private_same_space_relation_survives_
         context.property_formats[ANYCAL_PRIVATE_RELATIONS_PROPERTY_KEY],
         "objects"
     );
-    assert_eq!(properties[ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY], "space-shared");
+    assert_eq!(
+        properties[ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY],
+        "space-shared"
+    );
     assert_eq!(properties[ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY], source_id);
     assert_eq!(properties[ANYCAL_SOURCE_STATUS_PROPERTY_KEY], "available");
     assert_eq!(

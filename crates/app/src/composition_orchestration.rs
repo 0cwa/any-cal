@@ -1,13 +1,10 @@
 use crate::composition::{CompositionAuthorizationError, CompositionSourceScope};
 use crate::identity::CollectionKind;
+use crate::materialized_properties::ReferencePropertyPolicy;
+pub use crate::materialized_properties::{CompositionSchemaError, MetadataProjection};
 use crate::AppGeneric;
 use any_cal_anytype_adapter::{
-    AnytypeTransport, AnytypeTypedTransport, ObjectRecord, TransportError,
-    ANYCAL_FOREIGN_IDENTITY_PROPERTY_KEY, ANYCAL_PROFILE_FINGERPRINT_PROPERTY_KEY,
-    ANYCAL_SOURCE_ACCOUNT_FINGERPRINT_PROPERTY_KEY, ANYCAL_SOURCE_DAV_UID_PROPERTY_KEY,
-    ANYCAL_SOURCE_KIND_PROPERTY_KEY, ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY,
-    ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY, ANYCAL_SOURCE_STATUS_PROPERTY_KEY,
-    DEFAULT_OBJECT_TYPE_KEY,
+    AnytypeTransport, AnytypeTypedTransport, ObjectRecord, TransportError, DEFAULT_OBJECT_TYPE_KEY,
 };
 use any_cal_core::{
     reconcile_source_snapshot, CompositionError, CompositionProfile, ForeignObjectRef,
@@ -107,6 +104,7 @@ pub struct MaterializationResult {
     pub destination_object_id: String,
     pub created: bool,
     pub refresh_kind: RefreshKind,
+    pub metadata_projection: MetadataProjection,
     pub reference: MaterializedReference,
 }
 
@@ -129,6 +127,7 @@ pub enum CompositionOrchestrationError {
         error: RepositoryError,
     },
     SourceKindMismatch(String),
+    DestinationSchema(CompositionSchemaError),
     DestinationTransport(TransportError),
     MalformedDestinationRecord,
     DuplicateDestinationReference,
@@ -188,11 +187,17 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
             .authorize_composition(profile, token, source_scopes)
             .map_err(CompositionOrchestrationError::Authorization)?;
 
+        let property_policy = self
+            .materialized_property_policy(&plan.destination_domain_id, destination_type_key)
+            .map_err(CompositionOrchestrationError::DestinationSchema)?;
         let mut existing = self.scan_destination_materialized(&plan.destination_domain_id)?;
         existing.retain(|loaded| loaded.record.profile_fingerprint == plan.profile_fingerprint);
         let mut by_correlation = BTreeMap::<CorrelationKey, usize>::new();
         let mut by_identity = BTreeMap::<String, usize>::new();
         for (index, loaded) in existing.iter().enumerate() {
+            property_policy
+                .validate_existing(&loaded.object)
+                .map_err(CompositionOrchestrationError::DestinationSchema)?;
             if by_correlation
                 .insert(loaded.record.correlation_key(), index)
                 .is_some()
@@ -346,13 +351,16 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                     let mut object = existing[index].object.clone();
                     object.body = body;
                     object.archived = false;
-                    apply_managed_reference_properties(&mut object, &persisted)?;
+                    property_policy
+                        .apply(&mut object, &persisted)
+                        .map_err(CompositionOrchestrationError::Composition)?;
                     let result = self.write_destination_object(
                         &destination_domain_id,
                         object,
                         false,
                         destination_type_key,
                         &persisted,
+                        property_policy,
                     )?;
                     existing[index] = LoadedDestination {
                         object: result.clone(),
@@ -382,13 +390,16 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                         archived: false,
                         revision: 0,
                     };
-                    apply_managed_reference_properties(&mut object, &persisted)?;
+                    property_policy
+                        .apply(&mut object, &persisted)
+                        .map_err(CompositionOrchestrationError::Composition)?;
                     let result = self.write_destination_object(
                         &destination_domain_id,
                         object,
                         true,
                         destination_type_key,
                         &persisted,
+                        property_policy,
                     )?;
                     let index = existing.len();
                     existing.push(LoadedDestination {
@@ -411,6 +422,7 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                 destination_object_id: object.id,
                 created,
                 refresh_kind: merge.kind,
+                metadata_projection: property_policy.projection(),
                 reference: merge.reference,
             });
         }
@@ -500,6 +512,7 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
         create: bool,
         destination_type_key: &str,
         expected_record: &MaterializedReferenceRecord,
+        property_policy: ReferencePropertyPolicy,
     ) -> Result<ObjectRecord, CompositionOrchestrationError> {
         let space_id = self
             .registry
@@ -557,7 +570,12 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
             }
             Err(TransportError::Timeout) => {
                 if create {
-                    self.reconcile_destination_create(domain_id, expected_record)
+                    self.reconcile_destination_create(
+                        domain_id,
+                        expected_record,
+                        &object,
+                        property_policy,
+                    )
                 } else {
                     let actual = {
                         let context = self
@@ -572,7 +590,11 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
                     }
                     .map_err(CompositionOrchestrationError::DestinationTransport)?;
                     let observed = MaterializedReferenceRecord::from_json(&actual.body)?;
-                    if observed == *expected_record {
+                    if actual.space_id == object.space_id
+                        && actual.id == object.id
+                        && observed == *expected_record
+                        && property_policy.confirms_write(&object, &actual)
+                    {
                         Ok(actual)
                     } else {
                         Err(CompositionOrchestrationError::DestinationTransport(
@@ -589,6 +611,8 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
         &mut self,
         domain_id: &str,
         expected: &MaterializedReferenceRecord,
+        intended: &ObjectRecord,
+        property_policy: ReferencePropertyPolicy,
     ) -> Result<ObjectRecord, CompositionOrchestrationError> {
         let candidates = self.scan_destination_materialized(domain_id)?;
         let expected_identity = expected
@@ -617,77 +641,13 @@ impl<T: AnytypeTransport + AnytypeTypedTransport> AppGeneric<T> {
         if matching.next().is_some() {
             return Err(CompositionOrchestrationError::DuplicateDestinationReference);
         }
+        if !property_policy.confirms_write(intended, &first.object) {
+            return Err(CompositionOrchestrationError::DestinationTransport(
+                TransportError::Timeout,
+            ));
+        }
         Ok(first.object)
     }
-}
-
-fn apply_managed_reference_properties(
-    object: &mut ObjectRecord,
-    record: &MaterializedReferenceRecord,
-) -> Result<(), CompositionOrchestrationError> {
-    let foreign_identity = record
-        .reference
-        .foreign
-        .identity_fingerprint()
-        .map_err(CompositionOrchestrationError::Composition)?;
-    let source_status = match record.reference.source_availability {
-        SourceAvailability::Available => "available",
-        SourceAvailability::Archived => "archived",
-        SourceAvailability::Deleted => "deleted",
-        SourceAvailability::Unavailable => "unavailable",
-    };
-    let source_kind = match record.reference.foreign.kind {
-        any_cal_core::DavKind::Contact => "contact",
-        any_cal_core::DavKind::ContactGroup => "contact_group",
-        any_cal_core::DavKind::Task => "task",
-        any_cal_core::DavKind::Event => "event",
-    };
-
-    let mut managed = vec![
-        (
-            ANYCAL_PROFILE_FINGERPRINT_PROPERTY_KEY,
-            record.profile_fingerprint.clone(),
-        ),
-        (ANYCAL_FOREIGN_IDENTITY_PROPERTY_KEY, foreign_identity),
-        (
-            ANYCAL_SOURCE_ACCOUNT_FINGERPRINT_PROPERTY_KEY,
-            record
-                .reference
-                .foreign
-                .upstream_account_fingerprint
-                .clone(),
-        ),
-        (
-            ANYCAL_SOURCE_SPACE_ID_PROPERTY_KEY,
-            record.reference.foreign.source_space_id.clone(),
-        ),
-        (
-            ANYCAL_SOURCE_OBJECT_ID_PROPERTY_KEY,
-            record.reference.foreign.source_object_id.clone(),
-        ),
-        (ANYCAL_SOURCE_KIND_PROPERTY_KEY, source_kind.into()),
-        (ANYCAL_SOURCE_STATUS_PROPERTY_KEY, source_status.into()),
-    ];
-    if let Some(dav_uid) = record.reference.foreign.dav_uid.clone() {
-        managed.push((ANYCAL_SOURCE_DAV_UID_PROPERTY_KEY, dav_uid));
-    }
-
-    let managed_keys = managed
-        .iter()
-        .map(|(key, _)| *key)
-        .collect::<BTreeSet<_>>();
-    object
-        .properties
-        .retain(|(key, _)| !managed_keys.contains(key.as_str()));
-    object
-        .property_formats
-        .retain(|key, _| !managed_keys.contains(key.as_str()));
-    for (key, value) in managed {
-        object.properties.push((key.into(), value));
-        object.property_formats.insert(key.into(), "text".into());
-    }
-    object.properties.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(())
 }
 
 fn unavailable_snapshot(
