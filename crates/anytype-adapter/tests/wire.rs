@@ -137,6 +137,60 @@ fn response_formats_round_trip_select_multi_select_and_object_links() {
 }
 
 #[test]
+fn updates_filter_system_properties_without_changing_reads_or_creates() {
+    let wrapped = json!({
+        "object": {
+            "id": "server-object-1",
+            "space_id": "space-1",
+            "markdown": "private body",
+            "properties": [
+                {"key": "backlinks", "format": "objects", "objects": ["object-a"]},
+                {"key": "CREATOR", "format": "objects", "objects": ["creator-a"]},
+                {"key": "created_date", "format": "date", "date": "2026-01-01T00:00:00Z"},
+                {"key": "Last_Modified_Date", "format": "date", "date": "2026-01-02T00:00:00Z"},
+                {"key": "last_modified_by", "format": "objects", "objects": ["editor-a"]},
+                {"key": "links", "format": "objects", "objects": ["object-b"]},
+                {"key": "private_note", "format": "text", "text": "true"},
+                {"key": "personal_links", "format": "objects", "objects": ["local-object"]}
+            ]
+        }
+    });
+    let record = wire::decode_object(&wrapped.to_string(), None).unwrap();
+    let original = record.clone();
+    assert_eq!(record.properties.len(), 8, "reads retain system metadata");
+
+    let update: serde_json::Value =
+        serde_json::from_str(&wire::encode_update(&record).unwrap()).unwrap();
+    assert_eq!(
+        update["properties"],
+        json!([
+            {"key": "private_note", "text": "true"},
+            {"key": "personal_links", "objects": ["local-object"]}
+        ])
+    );
+    assert_eq!(update["markdown"], "```json\nprivate body\n```");
+    assert_eq!(record, original, "encoding does not mutate the read model");
+
+    let create: serde_json::Value =
+        serde_json::from_str(&wire::encode_create(&record).unwrap()).unwrap();
+    let create_keys: Vec<_> = create["properties"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|property| property["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        create_keys,
+        record
+            .properties
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        "the update policy does not change create encoding"
+    );
+}
+
+#[test]
 fn official_pagination_metadata_becomes_the_transport_offset() {
     let list = json!({
         "data": [{

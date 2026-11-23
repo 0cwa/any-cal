@@ -9,9 +9,9 @@ usage() {
   cat <<'EOF'
 usage: bash scripts/validate.sh [--offline] [--android]
 
-Runs the repository's normal pre-PR validation profile.
+Runs the repository and standalone Anytype probe pre-PR validation profile.
 
-  --offline  Skip cargo fetch; require locked dependencies to already be cached.
+  --offline  Skip both Cargo fetches; require both workspaces' dependencies cached.
   --android  Also run the full Android native/APK/unit-test build harness.
 EOF
 }
@@ -49,9 +49,13 @@ scripts/android-probe/validate.sh
 printf '%s\n' '==> Rust formatting'
 env -u LD_PRELOAD cargo fmt --all -- --check
 
+printf '%s\n' '==> standalone Anytype probe formatting'
+env -u LD_PRELOAD cargo fmt --manifest-path tools/anytype-probe/Cargo.toml --all -- --check
+
 if (( fetch_dependencies )); then
   printf '%s\n' '==> locked dependency fetch'
   env -u LD_PRELOAD cargo fetch --locked
+  env -u LD_PRELOAD cargo fetch --manifest-path tools/anytype-probe/Cargo.toml --locked
 else
   printf '%s\n' '==> locked dependency fetch skipped (--offline)'
 fi
@@ -59,8 +63,14 @@ fi
 printf '%s\n' '==> workspace tests'
 env -u LD_PRELOAD cargo test --workspace --offline --locked
 
+printf '%s\n' '==> standalone Anytype probe tests'
+env -u LD_PRELOAD cargo test --manifest-path tools/anytype-probe/Cargo.toml --offline --locked
+
 printf '%s\n' '==> Clippy'
 env -u LD_PRELOAD cargo clippy --workspace --all-targets --offline --locked -- -D warnings
+
+printf '%s\n' '==> standalone Anytype probe Clippy'
+env -u LD_PRELOAD cargo clippy --manifest-path tools/anytype-probe/Cargo.toml --all-targets --offline --locked -- -D warnings
 
 printf '%s\n' '==> packaging smoke test'
 env -u LD_PRELOAD scripts/test-packaging.sh

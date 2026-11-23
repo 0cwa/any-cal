@@ -50,6 +50,25 @@ New deployments can instead use one domain per contact book, task list, or calen
 - Lifecycle state is not part of the fingerprint; a temporary access failure must not
   create a new durable identity.
 
+## Boundary with cross-Space composition
+
+A `DomainBinding` answers only where a canonical DAV domain lives. It does not
+encode a principal's private composition preferences, a Personal Context, an Event
+Reference, a Daily Plan, or a dynamic list of Spaces a request may choose.
+
+Composition is a separate principal-scoped contract. It resolves configured domain IDs
+through the repository registry, may read several already-authorized source contexts,
+and writes exactly one explicitly configured private/home destination context. Request
+data never supplies or overrides source/destination Space IDs.
+
+The durable identity of a foreign source object is upstream account context + source
+Space ID + source object ID. A binding fingerprint remains routing/configuration
+identity and may legitimately change without making the foreign object a new object.
+
+Changing a composition profile therefore must not alter canonical DAV resource identity,
+binding fingerprints, checkpoint namespaces, or migration state. See
+[cross-space-composition.md](cross-space-composition.md).
+
 ## Legacy compatibility
 
 The existing scalar configuration:
@@ -72,13 +91,13 @@ configuration to explicit bindings without inventing a second routing model.
 
 ## Example
 
-A future multi-domain configuration can model:
+The current Contacts/VTODO runtime can route, for example:
 
 ```text
-/dav/contacts/personal        -> personal-contacts -> space-personal
-/dav/contacts/mutual-friends  -> mutual-friends    -> space-friends
-/dav/tasks/personal           -> personal-tasks    -> space-personal
-/dav/calendars/mutual-events  -> mutual-events     -> space-events
+/carddav/personal        -> personal-contacts -> space-personal
+/carddav/mutual-friends  -> mutual-friends    -> space-friends
+/caldav/personal         -> personal-tasks    -> space-personal
+/caldav/team-tasks       -> team-tasks        -> space-team
 ```
 
 The contract permits the shared `space-personal` target because route identity remains
@@ -86,8 +105,25 @@ domain-qualified.
 
 ## Current implementation boundary
 
-The contract lives in `any-cal-core` and current `AppConfig` can project its scalar
-configuration to a validated legacy binding set. Runtime repository routing and durable
-sync/checkpoint qualification are intentionally separate work tracked in GitHub issue
-#3. Multi-domain external configuration should not be advertised as operational until
-that routing work is complete.
+The core contract and explicit multi-domain application configuration are operational
+for Contacts and VTODO routes. Use `domain_bindings` in a config file,
+`ANY_CAL_DOMAIN_BINDINGS_JSON`, or `--domain-bindings-json`. Explicit bindings take
+precedence over scalar legacy settings and resolve through `DomainRepositoryRegistry`
+to independently scoped repository contexts.
+
+Current application limits are deliberate and validated before startup:
+
+- All bindings use the one configured upstream credential profile; an unknown profile
+  is rejected.
+- Contacts use `/carddav/<collection>` and tasks use `/caldav/<collection>`, with exactly
+  one collection segment and at most one route of each supported kind per binding.
+- The core contract can describe VEVENT routes, but the application rejects them until
+  event lifecycle/query semantics are implemented in issue #7.
+- Multi-domain configuration with the single `sync_checkpoint` option is rejected.
+  Binding-qualified checkpoint primitives do not yet provide a multi-domain checkpoint
+  configuration surface.
+
+The scalar fields remain an intentional single-domain input that converts to
+`legacy-default`; they are never a fallback for an explicit route. Canonical migration
+and recovery are tracked in issue #8. Cross-Space composition remains a separate
+principal-scoped operation and cannot override these routing rules.

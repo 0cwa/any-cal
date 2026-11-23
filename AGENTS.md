@@ -72,9 +72,10 @@ env -u LD_PRELOAD cargo clippy --workspace --all-targets --offline --locked -- -
 env -u LD_PRELOAD scripts/test-packaging.sh
 ```
 
-The full Android build remains more expensive and is only included by the
-`--android` option. For the standalone Anytype probe, run Cargo from
-`tools/anytype-probe`.
+The script also checks the standalone Anytype probe (formatting, tests, and Clippy)
+with its own lockfile. `--offline` requires cached dependencies for both Rust
+workspaces. The full Android build remains more expensive and is only included
+by the `--android` option.
 
 ## Change discipline
 

@@ -26,6 +26,7 @@ pub mod discovery;
 mod domain_registry;
 mod http;
 pub mod identity;
+pub mod person_context;
 
 pub use config::{parse_cli, AppConfig, ConfigError};
 

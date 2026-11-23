@@ -1,12 +1,15 @@
 # Any-Cal
 
-Any-Cal is a bounded, headless DAV translator whose durable database is an
-Anytype Space. It exposes Anytype objects to DAV clients; it does not maintain
-a second persistent sync database.
+Any-Cal is a bounded, headless DAV translator whose durable data lives in
+explicitly configured Anytype Spaces. It exposes canonical Anytype objects to
+DAV clients and does not maintain a second persistent sync database.
 
 ## Current profile
 
 - `any-cal` provides CardDAV Contacts and CalDAV `VTODO` task collections.
+- Explicit domain bindings route each collection to one fixed Space through a
+  binding-scoped repository context. The runtime currently uses one configured
+  upstream credential profile.
 - `any-cal-gui` is an optional Slint configuration/status client; it does not
   own DAV state or Anytype data.
 - The service defaults to the Anytype HTTP transport. Deterministic fake mode
@@ -19,9 +22,14 @@ a second persistent sync database.
 - Calendar `VEVENT`, recurrence, incremental sync, and broad client
   compatibility remain extension work.
 
-Contacts and tasks are mapped to typed Anytype properties while preserving
-opaque/unknown DAV data in the adapter representation. Tasks can carry links
-to Anytype project objects without changing the DAV client model.
+Contacts and tasks preserve canonical DAV data, including fields that cannot
+be represented losslessly as Anytype properties. Optional property projection
+requires a matching destination schema; native typed mappings and relations
+remain tracked in [issue #6](https://github.com/0cwa/any-cal/issues/6).
+
+Cross-Space composition has library primitives and deterministic fixture
+coverage. A complete operator workflow and native Anytype editing validation
+remain tracked in [Person Context issue #39](https://github.com/0cwa/any-cal/issues/39).
 
 ## Configuration and diagnostics
 
@@ -43,6 +51,12 @@ starts the local DAV listener. `/health` distinguishes local configuration
 from upstream reachability, and `/ready` performs a bounded read against the
 configured Space before reporting readiness.
 
+For multiple collections/Spaces, configure `domain_bindings` in the config
+file, `ANY_CAL_DOMAIN_BINDINGS_JSON`, or `--domain-bindings-json`. Explicit
+bindings are authoritative; scalar legacy Space/collection settings do not
+participate in their routing. See the [domain binding contract](docs/plan/domain-bindings.md)
+for supported route shapes and current runtime limits.
+
 ## Build, test, and package
 
 For the normal pre-PR validation profile, use:
@@ -51,8 +65,10 @@ For the normal pre-PR validation profile, use:
 bash scripts/validate.sh
 ```
 
-Use `--offline` when locked dependencies are already cached, and add `--android`
-when Android/JNI/build changes are in scope. The underlying checks are:
+Use `--offline` when the root workspace and standalone Anytype probe dependencies
+are already cached, and add `--android` when Android/JNI/build changes are in
+scope. The script also validates `tools/anytype-probe` with its independent
+lockfile. The core repository checks are:
 
 ```sh
 bash scripts/docs/check-structure.sh

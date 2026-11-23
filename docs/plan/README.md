@@ -7,9 +7,10 @@
 
 ## Purpose
 
-Any-Cal is an always-on CardDAV and CalDAV server whose sole durable data
-store is an Anytype Space. It translates DAV resources to Anytype objects and
-translates Anytype objects back to vCard/iCalendar on request. The current
+Any-Cal is an always-on CardDAV and CalDAV server whose durable data lives in
+explicitly bound Anytype Spaces. Each canonical DAV collection has one owning
+Space. It translates DAV resources to Anytype objects and translates those
+objects back to vCard/iCalendar on request. The current
 desktop client is a thin Slint setup/status/diagnostics UI; it is not the DAV
 implementation. Tauri 2 + Svelte/TypeScript was researched as an alternative,
 but is not a dependency or supported build target in this repository.
@@ -21,7 +22,9 @@ live transport succeeds. The fake transport is explicit fixture/development
 mode and is never a production fallback.
 
 Contacts are exposed through CardDAV. Tasks are exposed as CalDAV `VTODO`
-resources. Calendar events are reserved for a later `VEVENT` profile.
+resources. Explicit domain bindings and independently scoped repository contexts
+route these collections to configured Spaces. Calendar events remain a later
+`VEVENT` profile; see [domain-bindings.md](domain-bindings.md) for runtime limits.
 
 ## Non-negotiable invariants
 
@@ -37,6 +40,9 @@ resources. Calendar events are reserved for a later `VEVENT` profile.
   data, not a lossy replacement for it.
 - The server advertises only capabilities it implements and tests against
   real clients.
+- Canonical DAV ownership and personal cross-Space composition are separate layers:
+  composition reads explicitly authorized domain contexts and writes exactly one
+  configured private/home context without changing canonical ownership.
 
 ## Target architecture
 
@@ -56,7 +62,10 @@ Slint UI (current thin client): setup, server status, and local health
 diagnostics
 ```
 
-See [schemas.md](schemas.md) for the object models,
+See [domain-bindings.md](domain-bindings.md) for canonical routing,
+[cross-space-composition.md](cross-space-composition.md) for private facets and
+cross-Space personal views,
+[schemas.md](schemas.md) for the object models,
 [development-efficiency.md](development-efficiency.md) for thin-slice sequencing,
 agent ownership, and automation,
 [research.md](research.md) for data/protocol decisions,
