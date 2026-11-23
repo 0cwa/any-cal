@@ -453,3 +453,82 @@ fn timed_out_title_creates_require_native_name_readback_without_retrying_the_cre
         }
     }
 }
+
+#[test]
+fn timed_out_create_requires_the_full_durable_record_even_when_native_fields_match() {
+    for native_metadata in [false, true] {
+        let fixture = Fixture::new();
+        fixture.discovery(
+            person_types(),
+            if native_metadata {
+                managed_schema()
+            } else {
+                Vec::new()
+            },
+        );
+        fixture.materialization(true);
+        {
+            let mut script = fixture.script.lock().unwrap();
+            script.steps.back_mut().unwrap().1 =
+                Reply::SaveDestinationWithRecordMutation(|record| {
+                    record
+                        .reference
+                        .user_fields
+                        .insert("private_notes".into(), json!("Concurrent private edit"));
+                });
+            script.steps.push_back((
+                "GET /v1/spaces/space-home/objects HTTP/1.1".into(),
+                Reply::Json(json!({"data":[{"id":"context-1"}]})),
+            ));
+            script.steps.push_back((
+                "GET /v1/spaces/space-home/objects/context-1 HTTP/1.1".into(),
+                Reply::Destination,
+            ));
+        }
+        let mut app = fixture.app();
+        app.discover_domain_capabilities("home").unwrap();
+        assert_eq!(
+            app.materialize_person_contexts(&profile(), "alice-token", &scopes()),
+            Err(PersonContextMaterializationError::Orchestration(
+                CompositionOrchestrationError::DestinationTransport(TransportError::Timeout)
+            ))
+        );
+
+        let create = last_write(&fixture);
+        let script = fixture.script.lock().unwrap();
+        let destination = script.destination.as_ref().unwrap();
+        assert_eq!(destination["name"], create["name"]);
+        let intended = record_from_markdown(&create["body"]);
+        let observed = record_from_markdown(&destination["markdown"]);
+        assert_eq!(observed.profile_fingerprint, intended.profile_fingerprint);
+        assert_eq!(observed.reference.foreign, intended.reference.foreign);
+        assert_eq!(observed.person_context_title, intended.person_context_title);
+        assert_ne!(observed, intended);
+        assert_eq!(
+            observed.reference.user_fields["private_notes"],
+            "Concurrent private edit"
+        );
+        let native_values = |properties: &Value| {
+            properties
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|property| (property["key"].clone(), property["text"].clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            native_values(&destination["properties"]),
+            native_values(&create["properties"])
+        );
+        assert_eq!(
+            script
+                .requests
+                .iter()
+                .filter(|(line, _)| line.starts_with("POST "))
+                .count(),
+            1
+        );
+        drop(script);
+        assert_destination_writes(&fixture);
+    }
+}

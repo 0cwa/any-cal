@@ -34,6 +34,7 @@ pub enum Reply {
     Destination,
     SaveDestination { timeout: bool },
     SaveDestinationIgnoringName,
+    SaveDestinationWithRecordMutation(fn(&mut MaterializedReferenceRecord)),
     Timeout,
 }
 
@@ -89,6 +90,17 @@ impl HttpExchange for ScriptedHttp {
                 // A matching body and properties must not confirm a write
                 // when the independently stored native title did not change.
                 save_destination(&mut script, &request_body, false);
+                return Err(TransportError::Timeout);
+            }
+            Reply::SaveDestinationWithRecordMutation(mutate) => {
+                let mut destination = save_destination(&mut script, &request_body, true);
+                let mut record = record_from_markdown(&destination["markdown"]);
+                mutate(&mut record);
+                destination["markdown"] = json!(format!(
+                    "```json\n{}\n```",
+                    record.canonical_json().unwrap()
+                ));
+                script.destination = Some(destination);
                 return Err(TransportError::Timeout);
             }
         }
